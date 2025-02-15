@@ -30,7 +30,7 @@ async fn get_config() -> (PlayoutConfig, ChannelManager) {
 
     let config = PlayoutConfig::new(&pool, 1).await.unwrap();
     let channel = handles::select_channel(&pool, &1).await.unwrap();
-    let manager = ChannelManager::new(pool, channel, config.clone());
+    let manager = ChannelManager::new(pool, channel, config.clone()).await;
 
     (config, manager)
 }
@@ -50,7 +50,7 @@ async fn video_audio_input() {
     let test_filter_cmd =
         vec_strings![
             "-filter_complex",
-            format!("[0:v:0]scale=1024:576,null[v];movie={}:loop=0,setpts=N/(FRAME_RATE*TB),format=rgba,colorchannelmixer=aa=0.7[l];[v][l]overlay=W-w-12:12:shortest=1[vout0];[0:a:0]anull[aout0]", config.processing.logo_path)
+            format!("[0:v:0]scale=1024:576[v];movie={}:loop=0,setpts=N/(FRAME_RATE*TB),format=rgba,colorchannelmixer=aa=0.7[l];[v][l]overlay=W-w-12:12:shortest=1[vout0];[0:a:0]anull[aout0]", config.processing.logo_path)
         ];
 
     let test_filter_map = vec_strings!["-map", "[vout0]", "-map", "[aout0]"];

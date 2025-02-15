@@ -17,7 +17,6 @@ use crate::db::{
 use crate::utils::{
     advanced_config::AdvancedConfig,
     config::{OutputMode, PlayoutConfig},
-    copy_assets,
 };
 use crate::ARGS;
 
@@ -64,8 +63,8 @@ pub struct Args {
     #[clap(long, env, help_heading = Some("Initial Setup"), help = "SMTP password for system mails")]
     pub smtp_password: Option<String>,
 
-    #[clap(long, env, help_heading = Some("Initial Setup"), help = "Use TLS for system SMTP")]
-    pub smtp_starttls: bool,
+    #[clap(long, env, help_heading = Some("Initial Setup"), help = "Use TLS for system SMTP", value_name = "TRUE/FALSE")]
+    pub smtp_starttls: Option<String>,
 
     #[clap(long, env, help_heading = Some("Initial Setup"), help = "SMTP port for system mail")]
     pub smtp_port: Option<u16>,
@@ -218,11 +217,12 @@ fn clean_input(input: &str) -> String {
         .to_string()
 }
 
-pub async fn run_args(pool: &Pool<Sqlite>) -> Result<(), ProcessError> {
+pub async fn init_args(pool: &Pool<Sqlite>) -> Result<bool, ProcessError> {
     let mut args = ARGS.clone();
+    let mut init = false;
 
     if !args.dump_advanced && !args.dump_config && !args.drop_db {
-        handles::db_migrate(pool).await?;
+        init = handles::db_migrate(pool).await?;
     }
 
     let channels = handles::select_related_channels(pool, None)
@@ -304,11 +304,26 @@ pub async fn run_args(pool: &Pool<Sqlite>) -> Result<(), ProcessError> {
             }
         }
 
-        if args.smtp_starttls {
-            global.smtp_starttls = true;
-        } else {
-            global.smtp_starttls = Confirm::new("SMTP use TLS").with_default(false).prompt()?;
+        match args.smtp_starttls {
+            Some(val) => match val.to_lowercase().as_str() {
+                "true" => global.smtp_starttls = true,
+                "false" => global.smtp_starttls = false,
+                _ => {
+                    return Err(ProcessError::Input(
+                        "--smtp-starttls accept true or false".to_string(),
+                    ))
+                }
+            },
+            None => {
+                global.smtp_starttls = Confirm::new("SMTP use TLS").with_default(false).prompt()?;
+            }
         }
+
+        // if args.smtp_starttls {
+        //     global.smtp_starttls = true;
+        // } else {
+        //     global.smtp_starttls = Confirm::new("SMTP use TLS").with_default(false).prompt()?;
+        // }
 
         if let Some(port) = args.smtp_port {
             global.smtp_port = port;
@@ -339,10 +354,6 @@ pub async fn run_args(pool: &Pool<Sqlite>) -> Result<(), ProcessError> {
                 .to_string_lossy()
                 .to_string();
             channel.storage = storage_path.to_string_lossy().to_string();
-        };
-
-        if let Err(e) = copy_assets(&storage_path).await {
-            eprintln!("{e}");
         };
 
         handles::update_channel(pool, 1, channel).await?;
@@ -393,9 +404,8 @@ pub async fn run_args(pool: &Pool<Sqlite>) -> Result<(), ProcessError> {
     if ARGS.dump_advanced {
         if let Some(channel) = &ARGS.channel {
             for id in channel {
-                match AdvancedConfig::dump(pool, *id).await {
-                    Ok(_) => println!("Dump config to: advanced_{id}.toml"),
-                    Err(e) => return Err(ProcessError::Custom(format!("Dump config: {e}"))),
+                if let Err(e) = AdvancedConfig::dump(pool, *id).await {
+                    return Err(ProcessError::Custom(format!("Dump config: {e}")));
                 };
             }
         } else {
@@ -450,7 +460,7 @@ pub async fn run_args(pool: &Pool<Sqlite>) -> Result<(), ProcessError> {
         }
     }
 
-    Ok(())
+    Ok(init)
 }
 
 #[cfg(target_family = "unix")]

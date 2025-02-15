@@ -75,10 +75,6 @@ pub fn prepare_output_cmd(
     let mut new_params = vec![];
     let mut count = 0;
     let re_v = Regex::new(r"\[?0:v(:0)?\]?").unwrap();
-    let vtt_dummy = config
-        .channel
-        .storage
-        .join(config.processing.vtt_dummy.clone().unwrap_or_default());
 
     if let Some(mut filter) = filters.clone() {
         for (i, param) in output_params.iter().enumerate() {
@@ -100,10 +96,7 @@ pub fn prepare_output_cmd(
                 if filter.video_out_link.len() > count
                     && !output_params.contains(&"-map".to_string())
                 {
-                    new_params.append(&mut vec_strings![
-                        "-map",
-                        filter.video_out_link[count].clone()
-                    ]);
+                    new_params.append(&mut vec_strings!["-map", filter.video_out_link[count]]);
 
                     for i in 0..config.processing.audio_tracks {
                         new_params.append(&mut vec_strings!["-map", format!("0:a:{i}")]);
@@ -131,7 +124,7 @@ pub fn prepare_output_cmd(
         }
     }
 
-    if config.processing.vtt_enable && vtt_dummy.is_file() {
+    if config.processing.vtt_enable {
         let i = cmd.iter().filter(|&n| n == "-i").count().saturating_sub(1);
 
         cmd.append(&mut vec_strings!("-map", format!("{i}:s?")));
@@ -1162,4 +1155,45 @@ pub fn custom_format<T: fmt::Display>(template: &str, args: &[T]) -> String {
     }
 
     filled_template
+}
+
+fn gcd(a: u32, b: u32) -> u32 {
+    if b == 0 {
+        a
+    } else {
+        gcd(b, a % b)
+    }
+}
+
+pub fn fraction(d: f64, max_denominator: u32) -> (u32, u32) {
+    let mut best_numerator = 1;
+    let mut best_denominator = 1;
+    let mut min_error = f64::MAX;
+
+    for denominator in 1..=max_denominator {
+        let numerator = (d * denominator as f64).round() as u32;
+        let error = (d - (numerator as f64 / denominator as f64)).abs();
+
+        if error < min_error {
+            best_numerator = numerator;
+            best_denominator = denominator;
+            min_error = error;
+        }
+    }
+
+    let divisor = gcd(best_numerator, best_denominator);
+    (best_numerator / divisor, best_denominator / divisor)
+}
+
+pub fn calc_aspect(config: &PlayoutConfig, aspect_string: &Option<String>) -> f64 {
+    let mut source_aspect = config.processing.aspect;
+
+    if let Some(aspect) = aspect_string {
+        let aspect_vec: Vec<&str> = aspect.split(':').collect();
+        let w = aspect_vec[0].parse::<f64>().unwrap();
+        let h = aspect_vec[1].parse::<f64>().unwrap();
+        source_aspect = w / h;
+    }
+
+    source_aspect
 }
