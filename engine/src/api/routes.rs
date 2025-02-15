@@ -1481,7 +1481,7 @@ async fn save_file(
 async fn get_file(
     req: HttpRequest,
     controllers: web::Data<Mutex<ChannelController>>,
-) -> Result<actix_files::NamedFile, ServiceError> {
+) -> Result<HttpResponse, ServiceError> {
     let id: i32 = req.match_info().query("id").parse()?;
     let manager = controllers
         .lock()
@@ -1489,18 +1489,13 @@ async fn get_file(
         .get(id)
         .await
         .ok_or(ServiceError::BadRequest("Channel not found".to_string()))?;
-    let config = manager.config.lock().await;
-    let storage = config.channel.storage.clone();
+    // let config = manager.config.lock().await;
+    // let storage = config.channel.storage.clone();
+    let storage = manager.storage.lock().await;
     let file_path = req.match_info().query("filename");
-    let (path, _, _) = norm_abs_path(&storage, file_path)?;
-    let file = actix_files::NamedFile::open(path)?;
+    let opened_file = storage.open_media(&req, file_path).await?;
 
-    Ok(file
-        .use_last_modified(true)
-        .set_content_disposition(ContentDisposition {
-            disposition: DispositionType::Attachment,
-            parameters: vec![],
-        }))
+    Ok(opened_file)
 }
 
 /// **Get Public**
@@ -1535,7 +1530,7 @@ async fn get_public(
     .clean();
 
     let path = absolute_path.join(file_stem.as_str());
-    let file = actix_files::NamedFile::open(path)?;
+    let file = actix_files::NamedFile::open(path)?; // to:do = handle for s3
 
     Ok(file
         .use_last_modified(true)

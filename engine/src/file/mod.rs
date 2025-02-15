@@ -4,6 +4,7 @@ use std::{
 };
 
 use actix_multipart::Multipart;
+use actix_web::{HttpRequest, HttpResponse};
 use relative_path::RelativePath;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
@@ -14,6 +15,7 @@ mod watcher;
 
 use crate::player::utils::Media;
 use crate::utils::{config::PlayoutConfig, errors::ServiceError};
+use s3::S3_INDICATOR;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct PathObject {
@@ -67,6 +69,13 @@ pub enum StorageBackend {
 }
 
 impl StorageBackend {
+    pub async fn fetch_file_path(&self, file_path: &str) -> Result<String, ServiceError> {
+        match self {
+            StorageBackend::Local(storage) => storage.fetch_file_path(file_path).await,
+            StorageBackend::S3(storage) => storage.fetch_file_path(file_path).await,
+        }
+    }
+
     pub async fn browser(&self, path_obj: &PathObject) -> Result<PathObject, ServiceError> {
         match self {
             StorageBackend::Local(storage) => storage.browser(path_obj).await,
@@ -157,9 +166,21 @@ impl StorageBackend {
             StorageBackend::S3(storage) => storage.is_file(input),
         }
     }
+
+    pub async fn open_media(
+        &self,
+        _req: &HttpRequest,
+        path_obj: &str,
+    ) -> Result<HttpResponse, ServiceError> {
+        match self {
+            StorageBackend::Local(storage) => storage.open_media(_req, path_obj).await,
+            StorageBackend::S3(storage) => storage.open_media(_req, path_obj).await,
+        }
+    }
 }
 
 trait Storage {
+    async fn fetch_file_path(&self, file_path: &str) -> Result<String, ServiceError>;
     async fn browser(&self, path_obj: &PathObject) -> Result<PathObject, ServiceError>;
     async fn mkdir(&self, path_obj: &PathObject) -> Result<(), ServiceError>;
     async fn rename(&self, move_object: &MoveObject) -> Result<MoveObject, ServiceError>;
@@ -180,12 +201,17 @@ trait Storage {
     async fn copy_assets(&self) -> Result<(), std::io::Error>;
     fn is_dir<P: AsRef<Path>>(&self, input: P) -> bool;
     fn is_file<P: AsRef<Path>>(&self, input: P) -> bool;
+    async fn open_media(
+        &self,
+        _req: &HttpRequest,
+        file_path: &str,
+    ) -> Result<HttpResponse, ServiceError>;
 }
 
 pub fn select_storage_type<S: AsRef<std::ffi::OsStr>>(path: S) -> StorageType {
     let path_str = path.as_ref().to_string_lossy().to_lowercase();
 
-    if path_str.starts_with("s3://") {
+    if path_str.starts_with(S3_INDICATOR) {
         return StorageType::S3;
     }
 
@@ -201,7 +227,7 @@ pub async fn init_storage(
         StorageType::Local => {
             StorageBackend::Local(local::LocalStorage::new(root, extensions).await)
         }
-        StorageType::S3 => StorageBackend::S3(s3::S3Storage::new(root, extensions)),
+        StorageType::S3 => StorageBackend::S3(s3::S3Storage::new(root, extensions).await),
     }
 }
 

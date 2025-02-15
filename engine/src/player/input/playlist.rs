@@ -507,6 +507,16 @@ impl CurrentProgram {
 
     /// Generate the source CMD, or when clip not exist, get a dummy.
     pub async fn gen_source(&mut self, mut node: Media, last_index: usize) {
+        let cloned_source = node.source.clone();
+        node.source = self
+            .manager
+            .storage
+            .lock()
+            .await
+            .fetch_file_path(&cloned_source)
+            .await
+            .unwrap();
+
         let node_index = node.index.unwrap_or_default();
         let duration = node.out - node.seek;
 

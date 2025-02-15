@@ -186,7 +186,6 @@ pub async fn validate_playlist(
         }
 
         let pos = index + 1;
-
         if !is_remote(&item.source) {
             if item.audio.is_empty() {
                 if let Err(e) = item.add_probe(false).await {

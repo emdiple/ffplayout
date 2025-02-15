@@ -33,7 +33,6 @@ impl FolderSource {
         } else {
             path_list.push(&config.channel.storage);
         }
-
         if let Some(dates) = &config.general.generate {
             debug!(target: Target::file_mail(), channel = id;
                 "generate: {dates:?}, paths: {path_list:?}"

@@ -1,58 +1,746 @@
+use std::io::Write;
 use std::{
+    io::{Error, ErrorKind},
     path::{Path, PathBuf},
-    sync::{atomic::AtomicBool, Arc},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
 };
 
 use actix_multipart::Multipart;
+use actix_web::HttpRequest;
+use actix_web::{http::StatusCode, web, HttpResponse};
+use futures_util::TryStreamExt as _;
+use lexical_sort::{natural_lexical_cmp, PathSort};
+use log::*;
+use rand::{distr::Alphanumeric, Rng};
+use regex::Regex;
 use tokio::sync::Mutex;
 
-use crate::file::{MoveObject, PathObject, Storage};
-use crate::player::utils::Media;
-use crate::utils::{config::PlayoutConfig, errors::ServiceError};
+use crate::file::{MoveObject, PathObject, Storage, VideoFile};
+use crate::player::utils::{include_file_extension, probe::MediaProbe, Media};
+use crate::utils::{config::PlayoutConfig, errors::ServiceError, logging::Target};
+
+use aws_config::Region;
+use aws_sdk_s3::{
+    presigning::PresigningConfig,
+    types::{CompletedMultipartUpload, CompletedPart},
+    Client,
+};
+
+pub const S3_INDICATOR: &str = "s3://";
+pub const S3_DEFAULT_PRESIGNEDURL_EXP: f64 = 3600.0 * 24.0;
+pub const S3_MAX_KEYS: i32 = 50000;
 
 #[derive(Clone, Debug)]
 pub struct S3Storage {
     pub root: PathBuf,
+    _original_root: PathBuf,
     pub extensions: Vec<String>,
+    bucket: String,
+    client: Client,
 }
 
 impl S3Storage {
-    pub fn new(root: PathBuf, extensions: Vec<String>) -> Self {
-        Self { root, extensions }
+    pub async fn new(root: PathBuf, extensions: Vec<String>) -> Self {
+        let (credentials, bucket, endpoint_url) = s3_parse_string(&root.to_string_lossy())
+            .unwrap_or_else(|e| panic!("Invalid S3 schema!: {}", e));
+        let credentials_cloned = credentials.clone();
+        let endpoint_url_cloned = endpoint_url.clone();
+        Self {
+            root: PathBuf::new(),
+            _original_root: root,
+            extensions,
+            bucket,
+            client: {
+                let shared_provider =
+                    aws_sdk_s3::config::SharedCredentialsProvider::new(credentials_cloned);
+                let config = aws_config::from_env()
+                    .region(Region::new("us-east-1")) // Dummy default region, will added if needed!
+                    .credentials_provider(shared_provider)
+                    .load()
+                    .await;
+
+                let s3_config = aws_sdk_s3::config::Builder::from(&config)
+                    .endpoint_url(&endpoint_url_cloned)
+                    .force_path_style(true)
+                    .build();
+
+                aws_sdk_s3::Client::from_conf(s3_config)
+            },
+        }
+    }
+
+    pub async fn s3_get_object(
+        &self,
+        object_key: &str,
+        expires_in: u64,
+    ) -> Result<String, ServiceError> {
+        let expires_in = Duration::from_secs(expires_in);
+        let presigned_request = self
+            .client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(object_key)
+            .presigned(
+                PresigningConfig::expires_in(expires_in)
+                    .map_err(|_| ServiceError::InternalServerError)?,
+            )
+            .await
+            .map_err(|e| ServiceError::BadRequest(format!("Invalid S3 config!: {}", e)))?;
+
+        Ok(presigned_request.uri().to_string())
+    }
+
+    pub fn s3_rename(source_path: &str, target_path: &str) -> Result<MoveObject, ServiceError> {
+        let source_name = source_path.rsplit('/').next().unwrap_or(source_path);
+        let target_name = target_path.rsplit('/').next().unwrap_or(target_path);
+
+        Ok(MoveObject {
+            source: source_name.to_string(),
+            target: target_name.to_string(),
+        })
+    }
+
+    pub async fn s3_copy_object(
+        source_object: &str,
+        destination_object: &str,
+        bucket: &str,
+        client: &aws_sdk_s3::Client,
+    ) -> Result<(), ServiceError> {
+        let source_key = format!("{bucket}/{source_object}");
+        client
+            .copy_object()
+            .copy_source(&source_key)
+            .bucket(bucket)
+            .key(destination_object)
+            .send()
+            .await
+            .map_err(|e| ServiceError::Conflict(format!("Failed to copy object!: {}", e)))?;
+        Ok(())
+    }
+
+    pub async fn s3_delete_prefix(
+        source_path: &str,
+        bucket: &str,
+        s3_client: &Client,
+        recursive: bool,
+    ) -> Result<(), ServiceError> {
+        let (clean_path, parent_path) = s3_path(source_path)?;
+        let delimiter = '/';
+        let parent_list_resp = s3_client // list of objects and prefix in parent path
+            .list_objects_v2()
+            .bucket(bucket)
+            .prefix(&parent_path)
+            .delimiter(delimiter)
+            .max_keys(S3_MAX_KEYS)
+            .send()
+            .await
+            .map_err(|e| ServiceError::BadRequest(format!("Invalid S3 config!: {}", e)))?;
+        for prefix in parent_list_resp.common_prefixes() {
+            // detele prefix
+            if let Some(prefix) = prefix.prefix() {
+                if prefix == source_path {
+                    if recursive {
+                        // recursive deleting
+                        let target_fld_list_resp = s3_client
+                            .list_objects_v2()
+                            .bucket(bucket)
+                            .prefix(&clean_path)
+                            .max_keys(S3_MAX_KEYS)
+                            .send()
+                            .await
+                            .map_err(|_| ServiceError::InternalServerError)?;
+                        for objs in target_fld_list_resp.contents() {
+                            if let Some(obj) = objs.key() {
+                                s3_client
+                                    .delete_object()
+                                    .bucket(bucket)
+                                    .key(obj)
+                                    .send()
+                                    .await
+                                    .map_err(|_| {
+                                        ServiceError::BadRequest("Source does not exists!".into())
+                                    })?;
+                            }
+                        }
+                    } else {
+                        // non-recursive deleting
+                        let target_fld_list_resp = s3_client
+                            .list_objects_v2()
+                            .bucket(bucket)
+                            .prefix(&clean_path)
+                            .delimiter(delimiter)
+                            .max_keys(S3_MAX_KEYS)
+                            .send()
+                            .await
+                            .map_err(|_e| ServiceError::InternalServerError)?;
+                        for objs in target_fld_list_resp.contents() {
+                            if let Some(obj) = objs.key() {
+                                s3_client
+                                    .delete_object()
+                                    .bucket(bucket)
+                                    .key(obj)
+                                    .send()
+                                    .await
+                                    .map_err(|_| {
+                                        ServiceError::BadRequest("Source does not exists!".into())
+                                    })?;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn s3_delete_object(
+        source_path: &str,
+        bucket: &str,
+        s3_client: &Client,
+    ) -> Result<(), ServiceError> {
+        let (clean_path, _) = s3_path(source_path)?;
+        let obj_path = clean_path.rsplit_once('/').unwrap_or((&clean_path, "")).0;
+        s3_client
+            .delete_object()
+            .bucket(bucket)
+            .key(obj_path)
+            .send()
+            .await
+            .map_err(|e| ServiceError::Conflict(format!("Failed to remove object!: {}", e)))?;
+
+        Ok(())
+    }
+
+    pub async fn s3_rename_object(
+        source_object: &str,
+        destination_object: &str,
+        bucket: &str,
+        client: &aws_sdk_s3::Client,
+    ) -> Result<(), ServiceError> {
+        Self::s3_copy_object(source_object, destination_object, bucket, client).await?;
+        Self::s3_delete_object(source_object, bucket, client).await?;
+        Ok(())
+    }
+
+    /// **Check if Path is an S3 Object**
+    ///
+    /// Verifies whether the given path corresponds to an object in the specified S3 bucket.
+    pub async fn s3_is_object(
+        path: &str,
+        bucket: &str,
+        s3_client: &Client,
+    ) -> Result<bool, ServiceError> {
+        let mut is_object = false;
+        let (clean_path, parent_path) = s3_path(path)?;
+        let delimiter = '/';
+        let parent_list_resp = s3_client // list of objects and prefix in parent path
+            .list_objects_v2()
+            .bucket(bucket)
+            .prefix(&parent_path)
+            .delimiter(delimiter)
+            .max_keys(S3_MAX_KEYS)
+            .send()
+            .await
+            .map_err(|e| ServiceError::BadRequest(format!("Invalid S3 config!: {}", e)))?;
+        for object in parent_list_resp.contents() {
+            if let Some(prefix) = object.key() {
+                if prefix == clean_path {
+                    is_object = true;
+                }
+            }
+        }
+        Ok(is_object)
+    }
+
+    /// **Check if Path is an S3 Prefix**
+    ///
+    /// Checks if the given path corresponds to a prefix in the specified S3 bucket.
+    pub async fn s3_is_prefix(
+        path: &str,
+        bucket: &str,
+        s3_client: &Client,
+    ) -> Result<bool, ServiceError> {
+        let mut is_prefix = false;
+        let (clean_path, parent_path) = s3_path(path)?;
+        let delimiter = '/';
+        let parent_list_resp = s3_client // list of objects and prefix in parent path
+            .list_objects_v2()
+            .bucket(bucket)
+            .prefix(&parent_path)
+            .delimiter(delimiter)
+            .max_keys(S3_MAX_KEYS)
+            .send()
+            .await
+            .map_err(|e| ServiceError::BadRequest(format!("Invalid S3 config!: {}", e)))?;
+        for prefix in parent_list_resp.common_prefixes() {
+            if let Some(prefix) = prefix.prefix() {
+                if prefix == clean_path {
+                    is_prefix = true;
+                }
+            }
+        }
+        Ok(is_prefix)
     }
 }
 
 impl Storage for S3Storage {
-    async fn browser(&self, _path_obj: &PathObject) -> Result<PathObject, ServiceError> {
-        Ok(PathObject::default())
+    async fn fetch_file_path(&self, file_path: &str) -> Result<String, ServiceError> {
+        let (cleaned_root_prefix, _) = s3_path(&self._original_root.to_string_lossy())?;
+        let validated_file_path = file_path
+            .strip_prefix(&cleaned_root_prefix)
+            .unwrap_or(file_path);
+        self.s3_get_object(validated_file_path, S3_DEFAULT_PRESIGNEDURL_EXP as u64)
+            .await
     }
+    async fn browser(&self, path_obj: &PathObject) -> Result<PathObject, ServiceError> {
+        // let s3_obj_dur = duration;
+        let mut parent_folders = vec![];
+        let bucket = &self.bucket;
+        let path = path_obj.source.clone();
+        let delimiter = '/'; // should be a single character
+        let (prefix, parent_path) = s3_path(&path_obj.source)?;
+        let s3_client = &self.client;
+        let mut obj = PathObject::new(path.clone(), Some(bucket.clone()));
+        obj.folders_only = path_obj.folders_only;
 
-    async fn mkdir(&self, _path_obj: &PathObject) -> Result<(), ServiceError> {
+        if (prefix != parent_path && !path_obj.folders_only)
+            || (!prefix.is_empty() && (parent_path.is_empty()))
+        {
+            let childs_resp = s3_client
+                .list_objects_v2()
+                .bucket(bucket)
+                .prefix(&parent_path)
+                .delimiter(delimiter)
+                .max_keys(S3_MAX_KEYS)
+                .send()
+                .await
+                .map_err(|_e| ServiceError::InternalServerError)?;
+
+            for prefix in childs_resp.common_prefixes() {
+                if let Some(prefix) = prefix.prefix() {
+                    let child = prefix.split(delimiter).nth_back(1).unwrap_or("");
+                    parent_folders.push(child.to_string());
+                }
+            }
+            parent_folders.path_sort(natural_lexical_cmp);
+
+            obj.parent_folders = Some(parent_folders);
+        }
+
+        let list_resp = s3_client
+            .list_objects_v2()
+            .bucket(bucket)
+            .prefix(&prefix)
+            .delimiter(delimiter)
+            .max_keys(S3_MAX_KEYS)
+            .send()
+            .await
+            .map_err(|_| ServiceError::InternalServerError)?;
+
+        let mut folders: Vec<String> = vec![];
+        let mut files: Vec<String> = vec![];
+
+        for prefix in list_resp.common_prefixes() {
+            if let Some(prefix) = prefix.prefix() {
+                let fldrs = prefix.split(delimiter).nth_back(1).unwrap_or(prefix);
+                folders.push(fldrs.to_string());
+            }
+        }
+
+        for objs in list_resp.contents() {
+            if let Some(obj) = objs.key() {
+                if s3_obj_extension_checker(obj, &self.extensions) {
+                    let fls = obj.strip_prefix(bucket).unwrap_or(obj);
+                    files.push(fls.to_string());
+                }
+            }
+        }
+
+        files.path_sort(natural_lexical_cmp);
+        folders.path_sort(natural_lexical_cmp);
+
+        let mut media_files = vec![];
+        for file in files {
+            let s3file_presigned_url = self
+                .s3_get_object(&file, S3_DEFAULT_PRESIGNEDURL_EXP as u64)
+                .await?;
+            let name = file.strip_prefix(&prefix).unwrap_or(&file).to_string();
+            match MediaProbe::new(&s3file_presigned_url).await {
+                Ok(probe) => {
+                    let duration = probe.format.duration.unwrap_or_default();
+                    let video = VideoFile { name, duration };
+                    media_files.push(video);
+                }
+                Err(e) => error!("{e:?}"),
+            };
+        }
+
+        obj.folders = Some(folders);
+        obj.files = Some(media_files);
+        Ok(obj)
+    }
+    async fn mkdir(&self, path_obj: &PathObject) -> Result<(), ServiceError> {
+        let bucket: &str = &self.bucket;
+        let (folder_path, _) = &s3_path(&path_obj.source)?;
+        let none_file = format!("{}.ignore", folder_path); // it should be made to validate the new folder's existence
+        let client = &self.client;
+
+        let body = aws_sdk_s3::primitives::ByteStream::from(Vec::new()); // to not consume bytes!
+        client
+            .put_object()
+            .bucket(bucket)
+            .key(&none_file)
+            .body(body)
+            .send()
+            .await
+            .map_err(|_e| ServiceError::InternalServerError)?;
         Ok(())
     }
-    async fn rename(&self, _move_object: &MoveObject) -> Result<MoveObject, ServiceError> {
-        Ok(MoveObject::default())
+    async fn rename(&self, move_object: &MoveObject) -> Result<MoveObject, ServiceError> {
+        let bucket = &self.bucket.clone();
+        let client = &self.client.clone();
+        let obj_names = Self::s3_rename(&move_object.source, &move_object.target).unwrap();
+        if !Self::s3_is_prefix(&move_object.source, bucket, client).await? {
+            Self::s3_rename_object(&move_object.source, &move_object.target, bucket, client)
+                .await?;
+        }
+
+        Ok(MoveObject {
+            source: obj_names.source.to_string(),
+            target: obj_names.target.to_string(),
+        })
     }
-    async fn remove(&self, _source_path: &str, _recursive: bool) -> Result<(), ServiceError> {
+    async fn remove(&self, source_path: &str, recursive: bool) -> Result<(), ServiceError> {
+        let bucket = &self.bucket;
+        let client = &self.client;
+        let (clean_path, _) = s3_path(source_path)?;
+
+        if Self::s3_is_prefix(&clean_path, bucket, client).await? {
+            Self::s3_delete_prefix(&clean_path, bucket, client, recursive).await?;
+        } else {
+            Self::s3_delete_object(&clean_path, bucket, client).await?;
+        }
         Ok(())
     }
     async fn upload(
         &self,
-        _data: Multipart,
-        _path: &Path,
+        mut data: Multipart,
+        path: &Path,
         _is_abs: bool,
     ) -> Result<(), ServiceError> {
+        let mut upload_id: Option<String> = None;
+        let mut key: Option<String> = None;
+        let mut completed_parts: Vec<CompletedPart> = Vec::new();
+        let mut part_number = 1;
+        let mut s3_upload_permit = false;
+        let path = path.to_string_lossy();
+
+        while let Some(mut field) = data.try_next().await.map_err(|e| e.to_string())? {
+            let content_disposition = field
+                .content_disposition()
+                .ok_or("No content disposition")?;
+            debug!("{content_disposition}");
+
+            let mut rng = rand::rng();
+
+            let rand_string: String = (&mut rng)
+                .sample_iter(Alphanumeric)
+                .take(20)
+                .map(char::from)
+                .collect();
+
+            let filename = content_disposition
+                .get_filename()
+                .map_or_else(|| rand_string, sanitize_filename::sanitize);
+
+            let filepath = format!("{path}{filename}");
+
+            if upload_id.is_none() {
+                let create_multipart_upload_output = &self
+                    .client
+                    .create_multipart_upload()
+                    .bucket(&self.bucket)
+                    .key(&filepath)
+                    .send()
+                    .await
+                    .map_err(|e| format!("Failed to initiate multipart upload: {}", e))?;
+
+                upload_id = create_multipart_upload_output
+                    .upload_id()
+                    .map(ToString::to_string);
+                // .map(|id| id.to_string());
+
+                key = Some(filepath.clone());
+            }
+            let mut f = web::block(|| std::io::Cursor::new(Vec::new()))
+                .await
+                .map_err(|e| e.to_string())?;
+            loop {
+                match field.try_next().await {
+                    Ok(Some(chunk)) => {
+                        f = web::block(move || f.write_all(&chunk).map(|_| f))
+                            .await
+                            .map_err(|e| e.to_string())??;
+                        s3_upload_permit = true;
+                    }
+                    Ok(None) => break,
+                    Err(e) => {
+                        if e.to_string().contains("stream is incomplete") {
+                            info!("Incomplete stream for part, continuing multipart upload: {e}");
+
+                            tokio::fs::remove_file(filepath).await?;
+                        }
+
+                        return Err(e.into());
+                    }
+                }
+            }
+            let body_bytes = actix_web::web::Bytes::from(f.into_inner());
+
+            let upload_part_output = &self
+                .client
+                .upload_part()
+                .bucket(&self.bucket)
+                .key(key.as_ref().unwrap())
+                .upload_id(upload_id.as_ref().unwrap())
+                .part_number(part_number)
+                .body(body_bytes.into())
+                .send()
+                .await
+                .map_err(|e| format!("Failed to upload part: {}", e))?;
+
+            completed_parts.push(
+                CompletedPart::builder()
+                    .e_tag(upload_part_output.e_tag().unwrap())
+                    .part_number(part_number)
+                    .build(),
+            );
+            part_number += 1;
+        }
+        if s3_upload_permit {
+            let completed_multipart_upload = CompletedMultipartUpload::builder()
+                .set_parts(Some(completed_parts))
+                .build();
+
+            self.client
+                .complete_multipart_upload()
+                .bucket(&self.bucket)
+                .key(key.as_ref().unwrap())
+                .upload_id(upload_id.as_ref().unwrap())
+                .multipart_upload(completed_multipart_upload)
+                .send()
+                .await
+                .map_err(|e| format!("Failed to complete multipart upload: {}", e))?;
+        }
         Ok(())
     }
     async fn watchman(
         &mut self,
-        _config: PlayoutConfig,
-        _is_alive: Arc<AtomicBool>,
-        _sources: Arc<Mutex<Vec<Media>>>,
+        config: PlayoutConfig,
+        is_alive: Arc<AtomicBool>,
+        sources: Arc<Mutex<Vec<Media>>>,
     ) {
+        let bucket = &self.bucket.clone();
+        let client = &self.client.clone();
+
+        let path = self.root.to_string_lossy().clone();
+        let id = config.general.channel_id;
+
+        let mut list_resp = client
+            .list_objects_v2()
+            .bucket(bucket)
+            .prefix(path)
+            .max_keys(S3_MAX_KEYS)
+            .into_paginator()
+            .send();
+
+        while is_alive.load(Ordering::SeqCst) {
+            while let Some(result) = list_resp.next().await {
+                match result {
+                    Ok(object) => {
+                        let sources = Arc::clone(&sources);
+                        let config = config.clone();
+                        let self_clone = self.clone();
+
+                        tokio::spawn(async move {
+                            let mut media_list = sources.lock().await;
+                            if let Some(contents) = object.contents {
+                                for object in contents {
+                                    if let Some(key) = object.key {
+                                        if include_file_extension(&config, Path::new(&key)) {
+                                            let index = media_list.len();
+                                            let presigned_url = self_clone
+                                                .s3_get_object(
+                                                    &key,
+                                                    S3_DEFAULT_PRESIGNEDURL_EXP as u64,
+                                                )
+                                                .await
+                                                .unwrap();
+                                            let media =
+                                                Media::new(index, &presigned_url, false).await;
+
+                                            media_list.push(media);
+                                            info!(target: Target::file_mail(), channel = id; "Create new file: <b><magenta>{}</></b>", key);
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                    }
+                    Err(err) => {
+                        eprintln!("{err:?}");
+                    }
+                }
+            }
+            tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+        }
     }
 
     async fn stop_watch(&mut self) {}
+
+    async fn open_media(
+        &self,
+        _req: &HttpRequest,
+        file_path: &str,
+    ) -> Result<HttpResponse, ServiceError> {
+        let obj_key = file_path.strip_prefix(&self.bucket).unwrap_or(file_path);
+        let expires_in = S3_DEFAULT_PRESIGNEDURL_EXP as u64;
+
+        let obj_url = self.s3_get_object(obj_key, expires_in).await?;
+
+        // Redirect to the pre-signed S3 URL
+        Ok(HttpResponse::build(StatusCode::FOUND)
+            .append_header(("Location", obj_url))
+            .finish())
+    }
+}
+
+/// **S3 String Parser**
+///
+/// ## Purpose
+/// Parses S3 configuration details from a provided string, extracting the bucket name, endpoint URL, and AWS credentials.
+///
+/// ## Input Format
+/// The input string must follow this format:
+/// `s3://{bucket_name}/:{endpoint_url}/:{access_key}/:{secret_key}`
+///
+/// - **`bucket_name`**: The name of the S3 bucket.
+/// - **`endpoint_url`**: The URL of the S3 endpoint. If missing `http://` or `https://`, `http://` is automatically added.
+/// - **`access_key`**: The AWS or S3 access key.
+/// - **`secret_key`**: The AWS or S3 secret key.
+///
+/// ## Example
+/// ```rust
+/// let s3_string = "s3://my_bucket/:http://example.com/:my_access_key/:my_secret_key";
+/// match s3_parse_string(s3_string) {
+///     Ok((credentials, bucket_name, endpoint_url)) => {
+///         assert_eq!(bucket_name, "my_bucket");
+///         assert_eq!(endpoint_url, "http://example.com");
+///         assert_eq!(credentials.access_key_id(), "my_access_key");
+///     }
+///     Err(e) => eprintln!("Error: {}", e),
+/// }
+/// ```
+///
+/// ## Returns
+/// A `Result` containing:
+/// - **`aws_sdk_s3::config::Credentials`**: AWS credentials.
+/// - **`String`**: The S3 bucket name.
+/// - **`String`**: The endpoint URL.
+///
+/// Returns an error if the string does not match the expected format.
+///
+/// ## Errors
+/// - Returns `std::io::Error` if the input is invalid.
+///
+/// ## Use Case
+/// Use this function to parse S3 configurations from strings, such as environment variables or config files.
+pub fn s3_parse_string(
+    s3_str: &str,
+) -> Result<(aws_sdk_s3::config::Credentials, String, String), std::io::Error> {
+    let pattern = format!(r"{}([^/]+)/:(.*?)/:([^/]+)/:([^/]+)", S3_INDICATOR);
+
+    let re = Regex::new(&pattern)
+        .map_err(|_| Error::new(ErrorKind::InvalidInput, "Failed to compile regex"))?;
+    // Match the input string against the regex
+    if let Some(captures) = re.captures(s3_str) {
+        let access_key = captures[3].to_string();
+        let secret_key = captures[4].to_string();
+        let mut endpoint = captures[2].to_string();
+
+        if !endpoint.starts_with("http://") && !endpoint.starts_with("https://") {
+            endpoint = format!("http://{}", endpoint);
+        }
+
+        Ok((
+            aws_sdk_s3::config::Credentials::new(access_key, secret_key, None, None, "None"), // Credential
+            captures[1].to_string(), // bucket-name
+            endpoint,                // endpoint-url
+        ))
+    } else {
+        Err(Error::new(
+            ErrorKind::InvalidInput,
+            format!(
+                "Input S3 string does not match the expected format: {}",
+                s3_str
+            ),
+        ))
+    }
+}
+
+/// **S3 Path Preparer**
+///
+/// Cleans and validates an input path for S3 compatibility, ensuring proper formatting.
+///
+/// ## Parameters
+/// - **`input_path: &str`**: The raw input path to be processed.
+///
+/// ## Returns
+/// - **`Result<(String, String), ServiceError>`**:
+///   - **`clean_path`**: The sanitized path.
+///   - **`clean_parent_path`**: The sanitized parent path.
+///
+/// ## Notes
+/// - Removes redundant slashes and ensures the path ends with a `/` where appropriate.
+/// - Returns an empty string for invalid or empty paths.
+pub fn s3_path(input_path: &str) -> Result<(String, String), ServiceError> {
+    fn s3_clean_path(input_path: &str) -> Result<String, ServiceError> {
+        let re = Regex::new("//+").unwrap(); // Matches one or more '/'
+        let none_redundant_path = re.replace_all(input_path, "/");
+        let clean_path = if !none_redundant_path.is_empty() && none_redundant_path != "/" {
+            if input_path.ends_with("/") {
+                none_redundant_path.trim_start_matches("/").to_string()
+            } else {
+                format!("{}/", none_redundant_path.trim_start_matches("/"))
+            }
+        } else {
+            String::new()
+        };
+        Ok(clean_path)
+    }
+    let clean_path = s3_clean_path(input_path)?;
+    let clean_parent_path = s3_clean_path(&format!(
+        "{}/",
+        clean_path
+            .rsplit('/')
+            .skip(2)
+            .collect::<Vec<&str>>()
+            .iter()
+            .rev()
+            .cloned()
+            .collect::<Vec<&str>>()
+            .join("/")
+    ))?;
+
+    Ok((clean_path, clean_parent_path))
+}
+
+fn s3_obj_extension_checker(obj_name: &str, extensions: &[String]) -> bool {
+    extensions.iter().any(|ext| obj_name.ends_with(ext))
 
     async fn fill_filler_list(
         &mut self,

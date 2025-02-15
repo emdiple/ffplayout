@@ -8,7 +8,11 @@ use std::os::unix::fs::MetadataExt;
 
 use actix_multipart::Multipart;
 use async_walkdir::WalkDir;
-// use futures_util::TryStreamExt as _;
+use actix_web::{
+    http::header::{ContentDisposition, DispositionType},
+    HttpRequest, HttpResponse,
+};
+use futures_util::TryStreamExt as _;
 use lexical_sort::{natural_lexical_cmp, PathSort};
 use log::*;
 use rand::{distr::Alphanumeric, rngs::StdRng, seq::SliceRandom, Rng, SeedableRng};
@@ -57,6 +61,10 @@ impl Drop for LocalStorage {
 }
 
 impl Storage for LocalStorage {
+    async fn fetch_file_path(&self, file_path: &str) -> Result<String, ServiceError> {
+        let (path, _, _) = norm_abs_path(&self.root, file_path)?;
+        Ok(path.to_string_lossy().to_string())
+    }
     async fn browser(&self, path_obj: &PathObject) -> Result<PathObject, ServiceError> {
         let (path, parent, path_component) = norm_abs_path(&self.root, &path_obj.source)?;
         let mut parent_folders = vec![];
@@ -306,6 +314,22 @@ impl Storage for LocalStorage {
         if let Some(handler) = watch_handler.as_mut() {
             handler.abort();
         }
+    }
+
+    async fn open_media(
+        &self,
+        _req: &HttpRequest,
+        file_path: &str,
+    ) -> Result<HttpResponse, ServiceError> {
+        let (path, _, _) = norm_abs_path(&self.root, file_path)?;
+        let file = actix_files::NamedFile::open(path)?;
+        Ok(file
+            .use_last_modified(true)
+            .set_content_disposition(ContentDisposition {
+                disposition: DispositionType::Attachment,
+                parameters: vec![],
+            })
+            .into_response(_req))
     }
 
     async fn fill_filler_list(

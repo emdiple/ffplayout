@@ -30,7 +30,6 @@ pub async fn watch(
 ) {
     let id = config.general.channel_id;
     let path = Path::new(&config.channel.storage);
-
     if !path.exists() {
         error!(target: Target::file_mail(), channel = id; "Folder path not exists: '{path:?}'");
         panic!("Folder path not exists: '{path:?}'");

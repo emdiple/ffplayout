@@ -59,7 +59,7 @@ use ProcessUnit::*;
 pub struct ChannelManager {
     pub id: i32,
     pub db_pool: Pool<Sqlite>,
-    pub config: Arc<Mutex<PlayoutConfig>>,
+    pub config: Arc<Mutex<PlayoutConfig>>, 
     pub channel: Arc<Mutex<Channel>>,
     pub decoder: Arc<Mutex<Option<Child>>>,
     pub encoder: Arc<Mutex<Option<Child>>>,
@@ -80,7 +80,7 @@ pub struct ChannelManager {
 }
 
 impl ChannelManager {
-    pub async fn new(db_pool: Pool<Sqlite>, channel: Channel, config: PlayoutConfig) -> Self {
+    pub async async fn new(db_pool: Pool<Sqlite>, channel: Channel, config: PlayoutConfig) -> Self {
         let s_type = select_storage_type(&config.channel.storage);
         let channel_extensions = channel.extra_extensions.clone();
         let mut extensions = config.storage.extensions.clone();
