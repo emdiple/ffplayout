@@ -576,7 +576,7 @@ impl Storage for S3Storage {
             .list_objects_v2()
             .bucket(bucket)
             .prefix(path)
-            .max_keys(S3_MAX_KEYS)
+            // .max_keys(S3_MAX_KEYS)
             .into_paginator()
             .send();
 
