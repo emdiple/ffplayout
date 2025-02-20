@@ -1,10 +1,7 @@
 use std::sync::atomic::Ordering;
 
-use async_walkdir::WalkDir;
-
 use log::*;
 use rand::{rngs::StdRng, seq::SliceRandom, SeedableRng};
-use tokio_stream::StreamExt;
 
 use crate::player::{
     controller::ChannelManager,
@@ -27,6 +24,7 @@ impl FolderSource {
         let mut path_list = vec![];
         let mut media_list = vec![];
         let mut index: usize = 0;
+        let storage = manager.storage.lock().await.clone();
 
         if !config.storage.paths.is_empty() && config.general.generate.is_some() {
             path_list.extend(&config.storage.paths);
@@ -40,16 +38,26 @@ impl FolderSource {
         }
 
         for path in &path_list {
-            if !path.is_dir() {
+            if !storage.is_dir(path).await {
                 error!(target: Target::file_mail(), channel = id; "Path not exists: <b><magenta>{path:?}</></b>");
             }
 
-            let mut entries = WalkDir::new(path);
-
-            while let Some(Ok(entry)) = entries.next().await {
-                if entry.path().is_file() && include_file_extension(config, &entry.path()) {
-                    let media = Media::new(0, &entry.path().to_string_lossy(), false).await;
-                    media_list.push(media);
+            match storage.walk_dir(path).await {
+                Ok(paths) => {
+                    for p in paths {
+                        if storage.is_file(&p).await && include_file_extension(config, &p) {
+                            let fetched_path = storage
+                                .fetch_file_path(&p.to_string_lossy())
+                                .await
+                                .unwrap_or(p.to_string_lossy().to_string());
+                            let mut media = Media::new(0, &fetched_path, false).await;
+                            media.key = p.to_string_lossy().to_string();
+                            media_list.push(media);
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("{e:?}");
                 }
             }
         }

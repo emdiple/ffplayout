@@ -6,13 +6,11 @@
 /// It also respect the shuffle/sort mode.
 use std::io::Error;
 
-use async_walkdir::WalkDir;
 use chrono::Timelike;
 use lexical_sort::{natural_lexical_cmp, StringSort};
 use log::*;
 use rand::{rng, seq::SliceRandom, Rng};
 use tokio::fs;
-use tokio_stream::StreamExt;
 
 use crate::player::{
     controller::ChannelManager,
@@ -138,6 +136,7 @@ pub async fn generate_from_template(
     let mut rng = rng();
     let mut index: usize = 0;
     let id = config.general.channel_id;
+    let storage = manager.storage.lock().await.clone();
 
     for source in template.sources {
         let mut source_list = vec![];
@@ -150,15 +149,30 @@ pub async fn generate_from_template(
         for path in source.paths {
             debug!("Search files in <b><magenta>{path:?}</></b>");
             let mut file_list = vec![];
-            let mut entries = WalkDir::new(path);
 
-            while let Some(Ok(entry)) = entries.next().await {
-                if entry.path().is_file() && include_file_extension(config, &entry.path()) {
-                    let file = entry.path().to_string_lossy().to_string();
-
-                    file_list.push(file);
+            match storage.walk_dir(path).await {
+                Ok(storage_paths) => {
+                    for single_path in storage_paths {
+                        if storage.is_file(&single_path).await
+                            && include_file_extension(config, &single_path)
+                        {
+                            let file = single_path.to_string_lossy().to_string();
+                            file_list.push(file);
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("{e:?}");
                 }
             }
+
+            // while let Some(Ok(entry)) = entries.next().await {
+            //     if entry.path().is_file() && include_file_extension(config, &entry.path()) {
+            //         let file = entry.path().to_string_lossy().to_string();
+
+            //         file_list.push(file);
+            //     }
+            // }
 
             if !source.shuffle {
                 file_list.string_sort_unstable(natural_lexical_cmp);

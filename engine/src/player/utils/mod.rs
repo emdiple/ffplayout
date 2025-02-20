@@ -156,12 +156,14 @@ pub fn get_media_map(media: Media) -> Value {
 
 /// prepare json object for response
 pub async fn get_data_map(manager: &ChannelManager) -> Map<String, Value> {
-    let media = manager
+    let mut media = manager
         .current_media
         .lock()
         .await
         .clone()
         .unwrap_or_else(Media::default);
+    media.source = media.clone().key; // to-do : check it later!
+
     let channel = manager.channel.lock().await.clone();
     let config = manager.config.lock().await.processing.clone();
     let ingest_is_alive = manager.ingest_is_alive.load(Ordering::SeqCst);
@@ -191,6 +193,9 @@ pub async fn get_data_map(manager: &ChannelManager) -> Map<String, Value> {
 /// Video clip struct to hold some important states and comments for current media.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Media {
+    #[serde(skip_serializing, skip_deserializing)]
+    pub key: String,
+
     #[serde(skip_serializing, skip_deserializing)]
     pub begin: Option<f64>,
 
@@ -264,6 +269,7 @@ impl Media {
         }
 
         Self {
+            key: src.to_string(),
             begin: None,
             index: Some(index),
             title: None,
@@ -343,6 +349,7 @@ impl Media {
 impl Default for Media {
     fn default() -> Self {
         Self {
+            key: String::new(),
             begin: None,
             index: Some(0),
             title: None,
@@ -405,10 +412,11 @@ pub fn fps_calc(r_frame_rate: &str, default: f64) -> f64 {
 }
 
 pub async fn json_reader(path: &PathBuf) -> Result<JsonPlaylist, Error> {
+    // to-do : checkout the performance of the new implemented method!
     let mut f = File::options().read(true).write(false).open(path).await?;
     let mut contents = String::new();
     f.read_to_string(&mut contents).await?;
-    let p = serde_json::from_str(&contents)?;
+    let p: JsonPlaylist = serde_json::from_str(&contents)?;
 
     Ok(p)
 }
@@ -795,9 +803,13 @@ pub fn gen_dummy(config: &PlayoutConfig, duration: f64) -> (String, Vec<String>)
 // }
 
 pub fn is_remote(path: &str) -> bool {
+    // to-do : maybe needed to be more responsive to the storage type for example get the remote pattern of a specific storage type like "s3"
     Regex::new(r"^(https?|rtmps?|rts?p|udp|tcp|srt)://.*")
         .unwrap()
         .is_match(&path.to_lowercase())
+        || Regex::new(r"^(s3):/.*") // s3 implementation
+            .unwrap()
+            .is_match(&path.to_lowercase())
 }
 
 /// Check if file can include or has to exclude.

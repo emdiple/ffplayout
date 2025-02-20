@@ -59,7 +59,7 @@ use ProcessUnit::*;
 pub struct ChannelManager {
     pub id: i32,
     pub db_pool: Pool<Sqlite>,
-    pub config: Arc<Mutex<PlayoutConfig>>, 
+    pub config: Arc<Mutex<PlayoutConfig>>,
     pub channel: Arc<Mutex<Channel>>,
     pub decoder: Arc<Mutex<Option<Child>>>,
     pub encoder: Arc<Mutex<Option<Child>>>,
@@ -80,7 +80,7 @@ pub struct ChannelManager {
 }
 
 impl ChannelManager {
-    pub async async fn new(db_pool: Pool<Sqlite>, channel: Channel, config: PlayoutConfig) -> Self {
+    pub async fn new(db_pool: Pool<Sqlite>, channel: Channel, config: PlayoutConfig) -> Self {
         let s_type = select_storage_type(&config.channel.storage);
         let channel_extensions = channel.extra_extensions.clone();
         let mut extensions = config.storage.extensions.clone();
@@ -94,6 +94,9 @@ impl ChannelManager {
         let storage = Arc::new(Mutex::new(
             init_storage(s_type, config.channel.storage.clone(), extensions).await,
         ));
+
+        let storage_ins = storage.lock().await.clone();
+        storage_ins.echo_log();
 
         Self {
             id: channel.id,
@@ -130,7 +133,7 @@ impl ChannelManager {
         channel.time_shift.clone_from(&other.time_shift);
         channel.timezone.clone_from(&other.timezone);
 
-        let s_path = Path::new(&channel.storage);
+        let s_path = Path::new(&other.storage);
         let s_type = select_storage_type(s_path);
         let channel_extensions = channel.extra_extensions.clone();
         let mut extensions = self.config.lock().await.storage.extensions.clone();
@@ -143,6 +146,9 @@ impl ChannelManager {
         let mut storage = self.storage.lock().await;
 
         *storage = init_storage(s_type, s_path.to_path_buf(), extensions).await;
+
+        let storage_ins = &storage.clone();
+        storage_ins.echo_log();
     }
 
     pub async fn update_config(&self, new_config: PlayoutConfig) {
@@ -426,6 +432,7 @@ async fn find_m3u8_files(path: &Path) -> io::Result<Vec<String>> {
 
 /// Check if segment is in playlist, if not, delete it.
 async fn delete_old_segments<P: AsRef<Path> + Clone + std::fmt::Debug>(
+    // to-do: should be backend_storage compatible!
     path: P,
     pl_segments: &[String],
 ) -> io::Result<()> {

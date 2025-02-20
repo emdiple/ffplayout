@@ -131,7 +131,6 @@ pub async fn update_channel(
 ) -> Result<SqliteQueryResult, ProcessError> {
     const QUERY: &str =
         "UPDATE channels SET name = $2, preview_url = $3, extra_extensions = $4, public = $5, playlists = $6, storage = $7, timezone = $8 WHERE id = $1";
-
     let result = sqlx::query(QUERY)
         .bind(id)
         .bind(channel.name)

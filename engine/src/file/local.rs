@@ -7,17 +7,19 @@ use std::{
 use std::os::unix::fs::MetadataExt;
 
 use actix_multipart::Multipart;
-use async_walkdir::WalkDir;
 use actix_web::{
     http::header::{ContentDisposition, DispositionType},
     HttpRequest, HttpResponse,
 };
-use futures_util::TryStreamExt as _;
+use async_walkdir::WalkDir;
+
+// use futures_util::TryStreamExt as _;
+use tokio_stream::StreamExt;
+
 use lexical_sort::{natural_lexical_cmp, PathSort};
 use log::*;
 use rand::{distr::Alphanumeric, rngs::StdRng, seq::SliceRandom, Rng, SeedableRng};
 use tokio::{fs, io::AsyncWriteExt, sync::Mutex, task::JoinHandle};
-use tokio_stream::StreamExt;
 
 use crate::file::{norm_abs_path, watcher::watch, MoveObject, PathObject, Storage, VideoFile};
 use crate::player::utils::{file_extension, include_file_extension, probe::MediaProbe, Media};
@@ -61,6 +63,33 @@ impl Drop for LocalStorage {
 }
 
 impl Storage for LocalStorage {
+    /// Generate proper prefix key for objects' paths.
+    fn path_prefix_generator(&self) -> String {
+        let root = self.root.to_string_lossy().to_string();
+        let normalized_root = root
+            .strip_prefix("./")
+            .or_else(|| root.strip_prefix("/"))
+            .unwrap_or(&root);
+        format!("[LOCAL:]/{}", normalized_root)
+    }
+    /// Returns a sanitized file path by normalizing the root and prefixing with "local:".
+    fn sanitized_file_path(&self, path: &str) -> String {
+        let root = self.root.to_string_lossy().to_string();
+        let staged_path = path.strip_prefix(&root).unwrap_or(path).to_string();
+        let path_prefix = self.path_prefix_generator();
+        format!("{}{}", path_prefix, staged_path) // baked path
+    }
+    fn interpreted_file_path(&self, path: &str) -> String {
+        let path_prefix = &self.path_prefix_generator();
+        let cleaned_path = path.strip_prefix(path_prefix).unwrap_or(path).to_string();
+        format!("{}{}", &self.root.to_string_lossy(), cleaned_path)
+    }
+    fn echo_log(&self) {
+        info!(
+            "<blue>Local Storage initialized at base path '{}'",
+            &self.root.to_string_lossy()
+        );
+    }
     async fn fetch_file_path(&self, file_path: &str) -> Result<String, ServiceError> {
         let (path, _, _) = norm_abs_path(&self.root, file_path)?;
         Ok(path.to_string_lossy().to_string())
@@ -454,12 +483,31 @@ impl Storage for LocalStorage {
         Ok(())
     }
 
-    fn is_dir<P: AsRef<Path>>(&self, input: P) -> bool {
+    async fn is_dir<P: AsRef<Path>>(&self, input: P) -> bool {
         input.as_ref().is_dir()
     }
 
-    fn is_file<P: AsRef<Path>>(&self, input: P) -> bool {
+    async fn is_file<P: AsRef<Path>>(&self, input: P) -> bool {
         input.as_ref().is_file()
+    }
+
+    /// Asynchronously collects all paths in a directory.
+    ///
+    /// # Parameters
+    /// - `input`: Directory to search.
+    ///
+    /// # Returns
+    /// - `Ok(Vec<PathBuf>)`: Paths of all files and directories.
+    /// - `Err(ServiceError)`: On traversal error.
+    async fn walk_dir<P: AsRef<Path>>(&self, input: P) -> Result<Vec<PathBuf>, ServiceError> {
+        let mut contents = vec![];
+        let mut entries = WalkDir::new(input);
+
+        while let Some(Ok(entry)) = entries.next().await {
+            contents.push(entry.path());
+        }
+
+        Ok(contents)
     }
 }
 

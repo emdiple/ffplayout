@@ -883,6 +883,7 @@ pub async fn get_config(
     channel_id: i32,
 ) -> Result<PlayoutConfig, ServiceError> {
     let mut config = PlayoutConfig::new(pool, channel_id).await?;
+
     let args = ARGS.clone();
 
     config.general.generate = args.generate;

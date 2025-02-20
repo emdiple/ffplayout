@@ -82,7 +82,6 @@ impl Broadcaster {
         let (tx, rx) = mpsc::channel(10);
 
         tx.send(sse::Data::new("connected").into()).await.unwrap();
-
         let client = Client::new(manager, endpoint, tx);
         self.inner.lock().await.clients.push(client);
 

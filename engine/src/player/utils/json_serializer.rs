@@ -95,12 +95,14 @@ pub async fn read_json(
     config: &mut PlayoutConfig,
     current_list: Arc<Mutex<Vec<Media>>>,
     path: Option<String>,
+    // storage: StorageBackend,
     is_alive: Arc<AtomicBool>,
     seek: bool,
     get_next: bool,
 ) -> JsonPlaylist {
     let id = config.general.channel_id;
     let config_clone = config.clone();
+    // let storage_clone = storage.clone();
     let mut playlist_path = config.channel.playlists.clone();
     let start_sec = config.playlist.start_sec.unwrap();
     let date = get_date(seek, start_sec, get_next, &config.channel.timezone);

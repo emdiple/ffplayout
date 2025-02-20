@@ -69,6 +69,27 @@ pub enum StorageBackend {
 }
 
 impl StorageBackend {
+    pub fn interpreted_file_path(&self, path: &str) -> String {
+        match self {
+            StorageBackend::Local(storage) => storage.interpreted_file_path(path),
+            StorageBackend::S3(storage) => storage.interpreted_file_path(path),
+        }
+    }
+
+    pub fn sanitized_file_path(&self, path: &str) -> String {
+        match self {
+            StorageBackend::Local(storage) => storage.sanitized_file_path(path),
+            StorageBackend::S3(storage) => storage.sanitized_file_path(path),
+        }
+    }
+
+    pub fn echo_log(&self) {
+        match self {
+            StorageBackend::Local(storage) => storage.echo_log(),
+            StorageBackend::S3(storage) => storage.echo_log(),
+        }
+    }
+
     pub async fn fetch_file_path(&self, file_path: &str) -> Result<String, ServiceError> {
         match self {
             StorageBackend::Local(storage) => storage.fetch_file_path(file_path).await,
@@ -153,17 +174,24 @@ impl StorageBackend {
         }
     }
 
-    pub fn is_dir<P: AsRef<Path>>(&self, input: P) -> bool {
+    pub async fn is_dir<P: AsRef<Path>>(&self, input: P) -> bool {
         match self {
-            StorageBackend::Local(storage) => storage.is_dir(input),
-            StorageBackend::S3(storage) => storage.is_dir(input),
+            StorageBackend::Local(storage) => storage.is_dir(input).await,
+            StorageBackend::S3(storage) => storage.is_dir(input).await,
         }
     }
 
-    pub fn is_file<P: AsRef<Path>>(&self, input: P) -> bool {
+    pub async fn is_file<P: AsRef<Path>>(&self, input: P) -> bool {
         match self {
-            StorageBackend::Local(storage) => storage.is_file(input),
-            StorageBackend::S3(storage) => storage.is_file(input),
+            StorageBackend::Local(storage) => storage.is_file(input).await,
+            StorageBackend::S3(storage) => storage.is_file(input).await,
+        }
+    }
+
+    pub async fn walk_dir<P: AsRef<Path>>(&self, input: P) -> Result<Vec<PathBuf>, ServiceError> {
+        match self {
+            StorageBackend::Local(storage) => storage.walk_dir(input).await,
+            StorageBackend::S3(storage) => storage.walk_dir(input).await,
         }
     }
 
@@ -180,6 +208,10 @@ impl StorageBackend {
 }
 
 trait Storage {
+    fn path_prefix_generator(&self) -> String;
+    fn interpreted_file_path(&self, path: &str) -> String;
+    fn sanitized_file_path(&self, path: &str) -> String;
+    fn echo_log(&self);
     async fn fetch_file_path(&self, file_path: &str) -> Result<String, ServiceError>;
     async fn browser(&self, path_obj: &PathObject) -> Result<PathObject, ServiceError>;
     async fn mkdir(&self, path_obj: &PathObject) -> Result<(), ServiceError>;
@@ -199,8 +231,9 @@ trait Storage {
         fillers: Option<Arc<Mutex<Vec<Media>>>>,
     ) -> Vec<Media>;
     async fn copy_assets(&self) -> Result<(), std::io::Error>;
-    fn is_dir<P: AsRef<Path>>(&self, input: P) -> bool;
-    fn is_file<P: AsRef<Path>>(&self, input: P) -> bool;
+    async fn is_dir<P: AsRef<Path>>(&self, input: P) -> bool;
+    async fn is_file<P: AsRef<Path>>(&self, input: P) -> bool;
+    async fn walk_dir<P: AsRef<Path>>(&self, input: P) -> Result<Vec<PathBuf>, ServiceError>;
     async fn open_media(
         &self,
         _req: &HttpRequest,

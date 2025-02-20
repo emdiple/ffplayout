@@ -85,7 +85,7 @@ async fn event_stream(
         .get(*id)
         .await
         .ok_or(ServiceError::BadRequest("Channel not found".to_string()))?;
-
+    
     Ok(broadcaster
         .new_client(manager.clone(), user.endpoint.clone())
         .await)

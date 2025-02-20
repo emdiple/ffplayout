@@ -431,6 +431,7 @@ async fn patch_channel(
         .get(*id)
         .await
         .ok_or_else(|| ServiceError::BadRequest(format!("Channel {id} not found!")))?;
+
     let mut data = data.into_inner();
 
     if !role.has_authority(&Role::GlobalAdmin) {
@@ -445,7 +446,7 @@ async fn patch_channel(
     let new_config = get_config(&pool, *id).await?;
 
     manager.update_config(new_config).await;
-    manager.update_channel(&data).await;
+    manager.clone().update_channel(&data).await;
 
     Ok("Update Success")
 }
@@ -1018,6 +1019,7 @@ pub async fn media_current(
         .get(*id)
         .await
         .ok_or(ServiceError::BadRequest("Channel not found".to_string()))?;
+
     let media_map = get_data_map(&manager).await;
 
     Ok(web::Json(media_map))
@@ -1162,8 +1164,16 @@ pub async fn save_playlist(
         .await
         .ok_or(ServiceError::BadRequest("Channel not found".to_string()))?;
     let config = manager.config.lock().await.clone();
+    let storage = manager.storage.lock().await.clone();
 
-    match write_playlist(&config, data.into_inner()).await {
+    let mut data = data.into_inner();
+    for media in &mut data.program {
+        let cloned_media_source = media.source.clone();
+        // media.key = cloned_media_source.clone();
+        media.source = storage.sanitized_file_path(&cloned_media_source);
+    }
+
+    match write_playlist(&config, data).await {
         Ok(res) => Ok(web::Json(res)),
         Err(e) => Err(e),
     }
@@ -1556,6 +1566,7 @@ async fn get_public(
     expr = "user.channels.contains(&*id) || role.has_authority(&Role::GlobalAdmin)"
 )]
 async fn import_playlist(
+    // to-do : check this one!
     id: web::Path<i32>,
     payload: Multipart,
     obj: web::Query<ImportObj>,
