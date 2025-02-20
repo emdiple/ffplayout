@@ -1,7 +1,19 @@
-**ffplayout**
+**FFplayoutX**
 ================
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+
+
+**Fork of ffplayout - Now FFplayoutX - Community Driven Evolution**
+-----------------------------------------------------------------------
+
+This is a community-driven fork of the original [ffplayout](https://github.com/ffplayout/ffplayout) project.  I'm continuing development as **FFplayoutX**, with these initial focus areas:
+
+### New-Features
+
+*   **S3 Storage Support:** Input media from S3 compatible services like AWS S3, MinIO, and more.
+-----------------------------------------------------------------------
+<br />
 
 ![player](/docs/images/player.png)
 
@@ -124,3 +136,13 @@ If you are in playlist mode and move backwards or forwards in time, the time shi
 ## Note
 This project includes the DejaVu font, which are licensed under the [Bitstream Vera Fonts License](/assets/FONT_LICENSE.txt).
 ve.com/ffplayout/backers.svg?width=800&button=true)](https://opencollective.com/ffplayout)
+
+---
+
+**Credits & Acknowledgements**
+
+We gratefully acknowledge Jonathan [@jb-alvarado](https://github.com/jb-alvarado), the original author of ffplayout, for his foundational work and dedication to the project.  FFplayout X would not be possible without his initial vision and contributions.
+
+---
+
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
