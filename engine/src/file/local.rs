@@ -9,7 +9,7 @@ use std::os::unix::fs::MetadataExt;
 use actix_multipart::Multipart;
 use actix_web::{
     http::header::{ContentDisposition, DispositionType},
-    HttpRequest, HttpResponse,
+    web, HttpRequest, HttpResponse,
 };
 use async_walkdir::WalkDir;
 
@@ -21,7 +21,9 @@ use log::*;
 use rand::{distr::Alphanumeric, rngs::StdRng, seq::SliceRandom, Rng, SeedableRng};
 use tokio::{fs, io::AsyncWriteExt, sync::Mutex, task::JoinHandle};
 
-use crate::file::{norm_abs_path, watcher::watch, MoveObject, PathObject, Storage, VideoFile};
+use crate::file::{
+    media_map::MediaMap, norm_abs_path, watcher::watch, MoveObject, PathObject, Storage, VideoFile,
+};
 use crate::player::utils::{file_extension, include_file_extension, probe::MediaProbe, Media};
 use crate::utils::{config::PlayoutConfig, errors::ServiceError, logging::Target};
 
@@ -94,7 +96,12 @@ impl Storage for LocalStorage {
         let (path, _, _) = norm_abs_path(&self.root, file_path)?;
         Ok(path.to_string_lossy().to_string())
     }
-    async fn browser(&self, path_obj: &PathObject) -> Result<PathObject, ServiceError> {
+    async fn browser(
+        &self,
+        path_obj: &PathObject,
+        dur_data: web::Data<MediaMap>,
+    ) -> Result<PathObject, ServiceError> {
+        let media_duration = dur_data;
         let (path, parent, path_component) = norm_abs_path(&self.root, &path_obj.source)?;
         let mut parent_folders = vec![];
 
@@ -164,18 +171,27 @@ impl Storage for LocalStorage {
         let mut media_files = vec![];
 
         for file in files {
-            match MediaProbe::new(file.to_string_lossy().as_ref()).await {
-                Ok(probe) => {
-                    let duration = probe.format.duration.unwrap_or_default();
+            if let Some(stored_dur) = media_duration.get_obj(&file.to_string_lossy()) {
+                let video = VideoFile {
+                    name: file.file_name().unwrap().to_string_lossy().to_string(),
+                    duration: stored_dur,
+                };
+                media_files.push(video);
+            } else {
+                match MediaProbe::new(file.to_string_lossy().as_ref()).await {
+                    Ok(probe) => {
+                        let duration = probe.format.duration.unwrap_or_default();
+                        media_duration.add_obj(file.to_string_lossy().to_string(), duration)?;
 
-                    let video = VideoFile {
-                        name: file.file_name().unwrap().to_string_lossy().to_string(),
-                        duration,
-                    };
-                    media_files.push(video);
-                }
-                Err(e) => error!("{e:?}"),
-            };
+                        let video = VideoFile {
+                            name: file.file_name().unwrap().to_string_lossy().to_string(),
+                            duration,
+                        };
+                        media_files.push(video);
+                    }
+                    Err(e) => error!("{e:?}"),
+                };
+            }
         }
 
         obj.folders = Some(folders);
@@ -199,7 +215,11 @@ impl Storage for LocalStorage {
         Ok(())
     }
 
-    async fn rename(&self, move_object: &MoveObject) -> Result<MoveObject, ServiceError> {
+    async fn rename(
+        &self,
+        move_object: &MoveObject,
+        duration: web::Data<MediaMap>,
+    ) -> Result<MoveObject, ServiceError> {
         let (source_path, _, _) = norm_abs_path(&self.root, &move_object.source)?;
         let (mut target_path, _, _) = norm_abs_path(&self.root, &move_object.target)?;
 
@@ -210,6 +230,12 @@ impl Storage for LocalStorage {
         if (source_path.is_dir() || source_path.is_file())
             && source_path.parent() == Some(&target_path)
         {
+            if source_path.is_file() {
+                duration.update_obj(
+                    &source_path.to_string_lossy(),
+                    &target_path.to_string_lossy(),
+                )?;
+            }
             return rename_only(&source_path, &target_path).await;
         }
 
@@ -224,13 +250,22 @@ impl Storage for LocalStorage {
         }
 
         if source_path.is_file() && target_path.parent().is_some() {
+            duration.update_obj(
+                &source_path.to_string_lossy(),
+                &target_path.to_string_lossy(),
+            )?;
             return rename_only(&source_path, &target_path).await;
         }
 
         Err(ServiceError::InternalServerError)
     }
 
-    async fn remove(&self, source_path: &str, recursive: bool) -> Result<(), ServiceError> {
+    async fn remove(
+        &self,
+        source_path: &str,
+        duration: web::Data<MediaMap>,
+        recursive: bool,
+    ) -> Result<(), ServiceError> {
         let (source, _, _) = norm_abs_path(&self.root, source_path)?;
 
         if !source.exists() {
@@ -256,8 +291,11 @@ impl Storage for LocalStorage {
         }
 
         if source.is_file() {
-            match fs::remove_file(source).await {
-                Ok(_) => return Ok(()),
+            match fs::remove_file(source.clone()).await {
+                Ok(_) => {
+                    duration.remove_obj(&source.to_string_lossy())?;
+                    return Ok(());
+                }
                 Err(e) => {
                     error!("{e}");
                     return Err(ServiceError::BadRequest("Delete file failed!".into()));

@@ -4,15 +4,17 @@ use std::{
 };
 
 use actix_multipart::Multipart;
-use actix_web::{HttpRequest, HttpResponse};
+use actix_web::{web, HttpRequest, HttpResponse};
 use relative_path::RelativePath;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 mod local;
+pub mod media_map;
 mod s3;
 mod watcher;
 
+use crate::file::media_map::MediaMap;
 use crate::player::utils::Media;
 use crate::utils::{config::PlayoutConfig, errors::ServiceError};
 use s3::S3_INDICATOR;
@@ -97,10 +99,14 @@ impl StorageBackend {
         }
     }
 
-    pub async fn browser(&self, path_obj: &PathObject) -> Result<PathObject, ServiceError> {
+    pub async fn browser(
+        &self,
+        path_obj: &PathObject,
+        dur_data: web::Data<MediaMap>,
+    ) -> Result<PathObject, ServiceError> {
         match self {
-            StorageBackend::Local(storage) => storage.browser(path_obj).await,
-            StorageBackend::S3(storage) => storage.browser(path_obj).await,
+            StorageBackend::Local(storage) => storage.browser(path_obj, dur_data).await,
+            StorageBackend::S3(storage) => storage.browser(path_obj, dur_data).await,
         }
     }
 
@@ -111,17 +117,28 @@ impl StorageBackend {
         }
     }
 
-    pub async fn rename(&self, move_object: &MoveObject) -> Result<MoveObject, ServiceError> {
+    pub async fn rename(
+        &self,
+        move_object: &MoveObject,
+        duration: web::Data<MediaMap>,
+    ) -> Result<MoveObject, ServiceError> {
         match self {
-            StorageBackend::Local(storage) => storage.rename(move_object).await,
-            StorageBackend::S3(storage) => storage.rename(move_object).await,
+            StorageBackend::Local(storage) => storage.rename(move_object, duration).await,
+            StorageBackend::S3(storage) => storage.rename(move_object, duration).await,
         }
     }
 
-    pub async fn remove(&self, source_path: &str, recursive: bool) -> Result<(), ServiceError> {
+    pub async fn remove(
+        &self,
+        source_path: &str,
+        duration: web::Data<MediaMap>,
+        recursive: bool,
+    ) -> Result<(), ServiceError> {
         match self {
-            StorageBackend::Local(storage) => storage.remove(source_path, recursive).await,
-            StorageBackend::S3(storage) => storage.remove(source_path, recursive).await,
+            StorageBackend::Local(storage) => {
+                storage.remove(source_path, duration, recursive).await
+            }
+            StorageBackend::S3(storage) => storage.remove(source_path, duration, recursive).await,
         }
     }
 
@@ -213,10 +230,23 @@ trait Storage {
     fn sanitized_file_path(&self, path: &str) -> String;
     fn echo_log(&self);
     async fn fetch_file_path(&self, file_path: &str) -> Result<String, ServiceError>;
-    async fn browser(&self, path_obj: &PathObject) -> Result<PathObject, ServiceError>;
+    async fn browser(
+        &self,
+        path_obj: &PathObject,
+        dur_data: web::Data<MediaMap>,
+    ) -> Result<PathObject, ServiceError>;
     async fn mkdir(&self, path_obj: &PathObject) -> Result<(), ServiceError>;
-    async fn rename(&self, move_object: &MoveObject) -> Result<MoveObject, ServiceError>;
-    async fn remove(&self, source_path: &str, recursive: bool) -> Result<(), ServiceError>;
+    async fn rename(
+        &self,
+        move_object: &MoveObject,
+        duration: web::Data<MediaMap>,
+    ) -> Result<MoveObject, ServiceError>;
+    async fn remove(
+        &self,
+        source_path: &str,
+        duration: web::Data<MediaMap>,
+        recursive: bool,
+    ) -> Result<(), ServiceError>;
     async fn upload(&self, data: Multipart, path: &Path, is_abs: bool) -> Result<(), ServiceError>;
     async fn watchman(
         &mut self,

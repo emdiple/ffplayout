@@ -20,7 +20,7 @@ use rand::{distr::Alphanumeric, rngs::StdRng, seq::SliceRandom, Rng, SeedableRng
 use regex::Regex;
 use tokio::sync::Mutex;
 
-use crate::file::{MoveObject, PathObject, Storage, VideoFile};
+use crate::file::{media_map::MediaMap, MoveObject, PathObject, Storage, VideoFile};
 use crate::player::utils::{include_file_extension, probe::MediaProbe, Media};
 use crate::utils::{config::PlayoutConfig, errors::ServiceError, logging::Target};
 
@@ -33,7 +33,7 @@ use aws_sdk_s3::{
 
 pub const S3_INDICATOR: &str = "s3://";
 pub const S3_DEFAULT_PRESIGNEDURL_EXP: f64 = 3600.0 * 24.0;
-pub const S3_MAX_KEYS: i32 = 50000;
+// pub const S3_MAX_KEYS: i32 = 50000;
 
 #[derive(Clone, Debug)]
 pub struct S3Storage {
@@ -113,6 +113,8 @@ impl S3Storage {
         bucket: &str,
         client: &aws_sdk_s3::Client,
     ) -> Result<(), ServiceError> {
+        // let clean_source = s3_path(source_object)?;
+        // let clean_target = s3_path(destination_object)?;
         let source_key = format!("{bucket}/{source_object}");
         client
             .copy_object()
@@ -138,7 +140,7 @@ impl S3Storage {
             .bucket(bucket)
             .prefix(&parent_path)
             .delimiter(delimiter)
-            .max_keys(S3_MAX_KEYS)
+            // .max_keys(S3_MAX_KEYS)
             .send()
             .await
             .map_err(|e| ServiceError::BadRequest(format!("Invalid S3 config!: {}", e)))?;
@@ -152,7 +154,7 @@ impl S3Storage {
                             .list_objects_v2()
                             .bucket(bucket)
                             .prefix(&clean_path)
-                            .max_keys(S3_MAX_KEYS)
+                            // .max_keys(S3_MAX_KEYS)
                             .send()
                             .await
                             .map_err(|_| ServiceError::InternalServerError)?;
@@ -176,7 +178,7 @@ impl S3Storage {
                             .bucket(bucket)
                             .prefix(&clean_path)
                             .delimiter(delimiter)
-                            .max_keys(S3_MAX_KEYS)
+                            // .max_keys(S3_MAX_KEYS)
                             .send()
                             .await
                             .map_err(|_e| ServiceError::InternalServerError)?;
@@ -205,12 +207,10 @@ impl S3Storage {
         bucket: &str,
         s3_client: &Client,
     ) -> Result<(), ServiceError> {
-        let (clean_path, _) = s3_path(source_path)?;
-        let obj_path = clean_path.rsplit_once('/').unwrap_or((&clean_path, "")).0;
         s3_client
             .delete_object()
             .bucket(bucket)
-            .key(obj_path)
+            .key(source_path)
             .send()
             .await
             .map_err(|e| ServiceError::Conflict(format!("Failed to remove object!: {}", e)))?;
@@ -223,9 +223,13 @@ impl S3Storage {
         destination_object: &str,
         bucket: &str,
         client: &aws_sdk_s3::Client,
+        duration: web::Data<MediaMap>,
     ) -> Result<(), ServiceError> {
+        println!("source: {}", source_object); // DEBUG
         Self::s3_copy_object(source_object, destination_object, bucket, client).await?;
         Self::s3_delete_object(source_object, bucket, client).await?;
+        duration.update_obj(source_object, destination_object)?;
+
         Ok(())
     }
 
@@ -242,7 +246,7 @@ impl S3Storage {
             .bucket(&self.bucket)
             .prefix(&parent_path)
             .delimiter(delimiter)
-            .max_keys(S3_MAX_KEYS)
+            // .max_keys(S3_MAX_KEYS)
             .send()
             .await
             .map_err(|e| ServiceError::BadRequest(format!("Invalid S3 config!: {}", e)))?;
@@ -269,7 +273,7 @@ impl S3Storage {
             .bucket(&self.bucket)
             .prefix(&parent_path)
             .delimiter(delimiter)
-            .max_keys(S3_MAX_KEYS)
+            // .max_keys(S3_MAX_KEYS)
             .send()
             .await
             .map_err(|e| ServiceError::BadRequest(format!("Invalid S3 config!: {}", e)))?;
@@ -318,8 +322,13 @@ impl Storage for S3Storage {
         self.s3_get_object(validated_file_path, S3_DEFAULT_PRESIGNEDURL_EXP as u64)
             .await
     }
-    async fn browser(&self, path_obj: &PathObject) -> Result<PathObject, ServiceError> {
+    async fn browser(
+        &self,
+        path_obj: &PathObject,
+        dur_data: web::Data<MediaMap>,
+    ) -> Result<PathObject, ServiceError> {
         // let s3_obj_dur = duration;
+        let media_duration = dur_data;
         let mut parent_folders = vec![];
         let bucket = &self.bucket;
         let path = path_obj.source.clone();
@@ -337,7 +346,7 @@ impl Storage for S3Storage {
                 .bucket(bucket)
                 .prefix(&parent_path)
                 .delimiter(delimiter)
-                .max_keys(S3_MAX_KEYS)
+                // .max_keys(S3_MAX_KEYS)
                 .send()
                 .await
                 .map_err(|_e| ServiceError::InternalServerError)?;
@@ -358,7 +367,7 @@ impl Storage for S3Storage {
             .bucket(bucket)
             .prefix(&prefix)
             .delimiter(delimiter)
-            .max_keys(S3_MAX_KEYS)
+            // .max_keys(S3_MAX_KEYS)
             .send()
             .await
             .map_err(|_| ServiceError::InternalServerError)?;
@@ -391,14 +400,23 @@ impl Storage for S3Storage {
                 .s3_get_object(&file, S3_DEFAULT_PRESIGNEDURL_EXP as u64)
                 .await?;
             let name = file.strip_prefix(&prefix).unwrap_or(&file).to_string();
-            match MediaProbe::new(&s3file_presigned_url).await {
-                Ok(probe) => {
-                    let duration = probe.format.duration.unwrap_or_default();
-                    let video = VideoFile { name, duration };
-                    media_files.push(video);
-                }
-                Err(e) => error!("{e:?}"),
-            };
+            if let Some(stored_dur) = media_duration.get_obj(&file) {
+                let video = VideoFile {
+                    name,
+                    duration: stored_dur,
+                };
+                media_files.push(video);
+            } else {
+                match MediaProbe::new(&s3file_presigned_url).await {
+                    Ok(probe) => {
+                        let duration = probe.format.duration.unwrap_or_default();
+                        media_duration.add_obj(file, duration)?;
+                        let video = VideoFile { name, duration };
+                        media_files.push(video);
+                    }
+                    Err(e) => error!("{e:?}"),
+                };
+            }
         }
 
         obj.folders = Some(folders);
@@ -422,13 +440,23 @@ impl Storage for S3Storage {
             .map_err(|_e| ServiceError::InternalServerError)?;
         Ok(())
     }
-    async fn rename(&self, move_object: &MoveObject) -> Result<MoveObject, ServiceError> {
+    async fn rename(
+        &self,
+        move_object: &MoveObject,
+        duration: web::Data<MediaMap>,
+    ) -> Result<MoveObject, ServiceError> {
         let bucket = &self.bucket.clone();
         let client = &self.client.clone();
         let obj_names = Self::s3_rename(&move_object.source, &move_object.target).unwrap();
         if !Self::s3_is_prefix(self, &move_object.source).await? {
-            Self::s3_rename_object(&move_object.source, &move_object.target, bucket, client)
-                .await?;
+            Self::s3_rename_object(
+                &move_object.source,
+                &move_object.target,
+                bucket,
+                client,
+                duration,
+            )
+            .await?;
         }
 
         Ok(MoveObject {
@@ -436,7 +464,12 @@ impl Storage for S3Storage {
             target: obj_names.target.to_string(),
         })
     }
-    async fn remove(&self, source_path: &str, recursive: bool) -> Result<(), ServiceError> {
+    async fn remove(
+        &self,
+        source_path: &str,
+        duration: web::Data<MediaMap>,
+        recursive: bool,
+    ) -> Result<(), ServiceError> {
         let bucket = &self.bucket;
         let client = &self.client;
         let (clean_path, _) = s3_path(source_path)?;
@@ -445,7 +478,9 @@ impl Storage for S3Storage {
             Self::s3_delete_prefix(&clean_path, bucket, client, recursive).await?;
         } else {
             Self::s3_delete_object(&clean_path, bucket, client).await?;
+            duration.remove_obj(&clean_path)?;
         }
+
         Ok(())
     }
     async fn upload(
