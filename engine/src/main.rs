@@ -53,8 +53,9 @@ fn thread_counter() -> usize {
 
 #[tokio::main]
 async fn main() -> Result<(), ProcessError> {
+    let shared_duration = Arc::new(MediaMap::create(3000)); // to-do : implement it in frontend as input
+
     let mail_queues = Arc::new(Mutex::new(vec![]));
-    let shared_duration = web::Data::new(MediaMap::create(3000)); // to-do : implement it in frontend as input
     let pool = db_pool().await?;
 
     let mut init = init_args(&pool).await?;
@@ -128,7 +129,7 @@ async fn main() -> Result<(), ProcessError> {
                 .app_data(queues.clone())
                 .app_data(controllers.clone())
                 .app_data(auth_state.clone())
-                .app_data(shared_duration.clone())
+                .app_data(web::Data::new(shared_duration.clone()))
                 .app_data(web::Data::from(Arc::clone(&broadcast_data)))
                 .wrap(logger)
                 .service(web::scope("/auth").service(login).service(refresh))

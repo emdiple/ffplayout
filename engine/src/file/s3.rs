@@ -20,7 +20,7 @@ use rand::{distr::Alphanumeric, rngs::StdRng, seq::SliceRandom, Rng, SeedableRng
 use regex::Regex;
 use tokio::sync::Mutex;
 
-use crate::file::{media_map::MediaMap, MoveObject, PathObject, Storage, VideoFile};
+use crate::file::{media_map::SharedMediaMap, MoveObject, PathObject, Storage, VideoFile};
 use crate::player::utils::{include_file_extension, probe::MediaProbe, Media};
 use crate::utils::{config::PlayoutConfig, errors::ServiceError, logging::Target};
 
@@ -223,11 +223,13 @@ impl S3Storage {
         destination_object: &str,
         bucket: &str,
         client: &aws_sdk_s3::Client,
-        duration: web::Data<MediaMap>,
+        duration: web::Data<SharedMediaMap>,
     ) -> Result<(), ServiceError> {
         Self::s3_copy_object(source_object, destination_object, bucket, client).await?;
         Self::s3_delete_object(source_object, bucket, client).await?;
-        duration.update_obj(source_object, destination_object)?;
+        duration
+            .update_obj(source_object, destination_object)
+            .await?;
 
         Ok(())
     }
@@ -324,7 +326,7 @@ impl Storage for S3Storage {
     async fn browser(
         &self,
         path_obj: &PathObject,
-        dur_data: web::Data<MediaMap>,
+        dur_data: web::Data<SharedMediaMap>,
     ) -> Result<PathObject, ServiceError> {
         // let s3_obj_dur = duration;
         let media_duration = dur_data;
@@ -399,7 +401,7 @@ impl Storage for S3Storage {
                 .s3_get_object(&file, S3_DEFAULT_PRESIGNEDURL_EXP as u64)
                 .await?;
             let name = file.strip_prefix(&prefix).unwrap_or(&file).to_string();
-            if let Some(stored_dur) = media_duration.get_obj(&file) {
+            if let Some(stored_dur) = media_duration.get_obj(&file).await {
                 let video = VideoFile {
                     name,
                     duration: stored_dur,
@@ -409,7 +411,7 @@ impl Storage for S3Storage {
                 match MediaProbe::new(&s3file_presigned_url).await {
                     Ok(probe) => {
                         let duration = probe.format.duration.unwrap_or_default();
-                        media_duration.add_obj(file, duration)?;
+                        media_duration.add_obj(file, duration).await?;
                         let video = VideoFile { name, duration };
                         media_files.push(video);
                     }
@@ -442,10 +444,11 @@ impl Storage for S3Storage {
     async fn rename(
         &self,
         move_object: &MoveObject,
-        duration: web::Data<MediaMap>,
+        duration: web::Data<SharedMediaMap>,
     ) -> Result<MoveObject, ServiceError> {
         let bucket = &self.bucket.clone();
         let client = &self.client.clone();
+
         let obj_names = Self::s3_rename(&move_object.source, &move_object.target).unwrap();
         if !Self::s3_is_prefix(self, &move_object.source).await? {
             Self::s3_rename_object(
@@ -466,7 +469,7 @@ impl Storage for S3Storage {
     async fn remove(
         &self,
         source_path: &str,
-        duration: web::Data<MediaMap>,
+        duration: web::Data<SharedMediaMap>,
         recursive: bool,
     ) -> Result<(), ServiceError> {
         let bucket = &self.bucket;
@@ -477,7 +480,7 @@ impl Storage for S3Storage {
             Self::s3_delete_prefix(&clean_path, bucket, client, recursive).await?;
         } else {
             Self::s3_delete_object(&clean_path, bucket, client).await?;
-            duration.remove_obj(&clean_path)?;
+            duration.remove_obj(&clean_path).await?;
         }
 
         Ok(())

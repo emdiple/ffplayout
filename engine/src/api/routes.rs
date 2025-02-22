@@ -41,7 +41,7 @@ use crate::{
         handles,
         models::{Channel, Role, TextPreset, User, UserMeta},
     },
-    file::{media_map::MediaMap, norm_abs_path, MoveObject, PathObject},
+    file::{media_map::SharedMediaMap, norm_abs_path, MoveObject, PathObject},
     player::{
         controller::ChannelController,
         utils::{
@@ -1324,7 +1324,7 @@ pub async fn file_browser(
     controllers: web::Data<Mutex<ChannelController>>,
     role: AuthDetails<Role>,
     user: web::ReqData<UserMeta>,
-    durations: web::Data<MediaMap>,
+    duration: web::Data<SharedMediaMap>,
 ) -> Result<impl Responder, ServiceError> {
     let manager = controllers
         .lock()
@@ -1334,7 +1334,7 @@ pub async fn file_browser(
         .ok_or(ServiceError::BadRequest("Channel not found".to_string()))?;
     let storage = manager.storage.lock().await.clone();
 
-    match storage.browser(&data.into_inner(), durations).await {
+    match storage.browser(&data.into_inner(), duration.clone()).await {
         Ok(obj) => Ok(web::Json(obj)),
         Err(e) => Err(e),
     }
@@ -1390,7 +1390,7 @@ pub async fn move_rename(
     controllers: web::Data<Mutex<ChannelController>>,
     role: AuthDetails<Role>,
     user: web::ReqData<UserMeta>,
-    duration: web::Data<MediaMap>,
+    duration: web::Data<SharedMediaMap>,
 ) -> Result<impl Responder, ServiceError> {
     let manager = controllers
         .lock()
@@ -1399,7 +1399,7 @@ pub async fn move_rename(
         .await
         .ok_or(ServiceError::BadRequest("Channel not found".to_string()))?;
     let storage = manager.storage.lock().await;
-    match storage.rename(&data.into_inner(), duration).await {
+    match storage.rename(&data.into_inner(), duration.clone()).await {
         Ok(obj) => Ok(web::Json(obj)),
         Err(e) => Err(e),
     }
@@ -1423,7 +1423,7 @@ pub async fn remove(
     controllers: web::Data<Mutex<ChannelController>>,
     role: AuthDetails<Role>,
     user: web::ReqData<UserMeta>,
-    duration: web::Data<MediaMap>,
+    duration: web::Data<SharedMediaMap>,
 ) -> Result<impl Responder, ServiceError> {
     let manager = controllers
         .lock()
@@ -1435,7 +1435,7 @@ pub async fn remove(
     let recursive = data.recursive;
 
     match storage
-        .remove(&data.into_inner().source, duration, recursive)
+        .remove(&data.into_inner().source, duration.clone(), recursive)
         .await
     {
         Ok(obj) => Ok(web::Json(obj)),

@@ -22,7 +22,8 @@ use rand::{distr::Alphanumeric, rngs::StdRng, seq::SliceRandom, Rng, SeedableRng
 use tokio::{fs, io::AsyncWriteExt, sync::Mutex, task::JoinHandle};
 
 use crate::file::{
-    media_map::MediaMap, norm_abs_path, watcher::watch, MoveObject, PathObject, Storage, VideoFile,
+    media_map::SharedMediaMap, norm_abs_path, watcher::watch, MoveObject, PathObject, Storage,
+    VideoFile,
 };
 use crate::player::utils::{file_extension, include_file_extension, probe::MediaProbe, Media};
 use crate::utils::{config::PlayoutConfig, errors::ServiceError, logging::Target};
@@ -99,7 +100,7 @@ impl Storage for LocalStorage {
     async fn browser(
         &self,
         path_obj: &PathObject,
-        dur_data: web::Data<MediaMap>,
+        dur_data: web::Data<SharedMediaMap>,
     ) -> Result<PathObject, ServiceError> {
         let media_duration = dur_data;
         let (path, parent, path_component) = norm_abs_path(&self.root, &path_obj.source)?;
@@ -171,7 +172,7 @@ impl Storage for LocalStorage {
         let mut media_files = vec![];
 
         for file in files {
-            if let Some(stored_dur) = media_duration.get_obj(&file.to_string_lossy()) {
+            if let Some(stored_dur) = media_duration.get_obj(&file.to_string_lossy()).await {
                 let video = VideoFile {
                     name: file.file_name().unwrap().to_string_lossy().to_string(),
                     duration: stored_dur,
@@ -181,7 +182,9 @@ impl Storage for LocalStorage {
                 match MediaProbe::new(file.to_string_lossy().as_ref()).await {
                     Ok(probe) => {
                         let duration = probe.format.duration.unwrap_or_default();
-                        media_duration.add_obj(file.to_string_lossy().to_string(), duration)?;
+                        media_duration
+                            .add_obj(file.to_string_lossy().to_string(), duration)
+                            .await?;
 
                         let video = VideoFile {
                             name: file.file_name().unwrap().to_string_lossy().to_string(),
@@ -218,11 +221,10 @@ impl Storage for LocalStorage {
     async fn rename(
         &self,
         move_object: &MoveObject,
-        duration: web::Data<MediaMap>,
+        duration: web::Data<SharedMediaMap>,
     ) -> Result<MoveObject, ServiceError> {
         let (source_path, _, _) = norm_abs_path(&self.root, &move_object.source)?;
         let (mut target_path, _, _) = norm_abs_path(&self.root, &move_object.target)?;
-
         if !source_path.exists() {
             return Err(ServiceError::BadRequest("Source file not exist!".into()));
         }
@@ -231,10 +233,12 @@ impl Storage for LocalStorage {
             && source_path.parent() == Some(&target_path)
         {
             if source_path.is_file() {
-                duration.update_obj(
-                    &source_path.to_string_lossy(),
-                    &target_path.to_string_lossy(),
-                )?;
+                duration
+                    .update_obj(
+                        &source_path.to_string_lossy(),
+                        &target_path.to_string_lossy(),
+                    )
+                    .await?;
             }
             return rename_only(&source_path, &target_path).await;
         }
@@ -250,10 +254,12 @@ impl Storage for LocalStorage {
         }
 
         if source_path.is_file() && target_path.parent().is_some() {
-            duration.update_obj(
-                &source_path.to_string_lossy(),
-                &target_path.to_string_lossy(),
-            )?;
+            duration
+                .update_obj(
+                    &source_path.to_string_lossy(),
+                    &target_path.to_string_lossy(),
+                )
+                .await?;
             return rename_only(&source_path, &target_path).await;
         }
 
@@ -263,7 +269,7 @@ impl Storage for LocalStorage {
     async fn remove(
         &self,
         source_path: &str,
-        duration: web::Data<MediaMap>,
+        duration: web::Data<SharedMediaMap>,
         recursive: bool,
     ) -> Result<(), ServiceError> {
         let (source, _, _) = norm_abs_path(&self.root, source_path)?;
@@ -293,7 +299,7 @@ impl Storage for LocalStorage {
         if source.is_file() {
             match fs::remove_file(source.clone()).await {
                 Ok(_) => {
-                    duration.remove_obj(&source.to_string_lossy())?;
+                    duration.remove_obj(&source.to_string_lossy()).await?;
                     return Ok(());
                 }
                 Err(e) => {

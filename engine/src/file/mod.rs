@@ -14,7 +14,7 @@ pub mod media_map;
 mod s3;
 mod watcher;
 
-use crate::file::media_map::MediaMap;
+use crate::file::media_map::SharedMediaMap;
 use crate::player::utils::Media;
 use crate::utils::{config::PlayoutConfig, errors::ServiceError};
 use s3::S3_INDICATOR;
@@ -102,7 +102,7 @@ impl StorageBackend {
     pub async fn browser(
         &self,
         path_obj: &PathObject,
-        dur_data: web::Data<MediaMap>,
+        dur_data: web::Data<SharedMediaMap>,
     ) -> Result<PathObject, ServiceError> {
         match self {
             StorageBackend::Local(storage) => storage.browser(path_obj, dur_data).await,
@@ -120,7 +120,7 @@ impl StorageBackend {
     pub async fn rename(
         &self,
         move_object: &MoveObject,
-        duration: web::Data<MediaMap>,
+        duration: web::Data<SharedMediaMap>,
     ) -> Result<MoveObject, ServiceError> {
         match self {
             StorageBackend::Local(storage) => storage.rename(move_object, duration).await,
@@ -131,7 +131,7 @@ impl StorageBackend {
     pub async fn remove(
         &self,
         source_path: &str,
-        duration: web::Data<MediaMap>,
+        duration: web::Data<SharedMediaMap>,
         recursive: bool,
     ) -> Result<(), ServiceError> {
         match self {
@@ -233,18 +233,18 @@ trait Storage {
     async fn browser(
         &self,
         path_obj: &PathObject,
-        dur_data: web::Data<MediaMap>,
+        dur_data: web::Data<SharedMediaMap>,
     ) -> Result<PathObject, ServiceError>;
     async fn mkdir(&self, path_obj: &PathObject) -> Result<(), ServiceError>;
     async fn rename(
         &self,
         move_object: &MoveObject,
-        duration: web::Data<MediaMap>,
+        duration: web::Data<SharedMediaMap>,
     ) -> Result<MoveObject, ServiceError>;
     async fn remove(
         &self,
         source_path: &str,
-        duration: web::Data<MediaMap>,
+        duration: web::Data<SharedMediaMap>,
         recursive: bool,
     ) -> Result<(), ServiceError>;
     async fn upload(&self, data: Multipart, path: &Path, is_abs: bool) -> Result<(), ServiceError>;
