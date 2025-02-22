@@ -12,6 +12,7 @@ This is a community-driven fork of the original [ffplayout](https://github.com/f
 ### New-Features
 
 *   **S3 Storage Support:** Input media from S3 compatible services like AWS S3, MinIO, and more.
+*   **Performance Improvement:** Media duration caching speeds up ffplayout by storing durations in memory.
 -----------------------------------------------------------------------
 <br />
 
