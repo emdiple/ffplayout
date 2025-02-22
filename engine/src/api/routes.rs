@@ -1399,7 +1399,6 @@ pub async fn move_rename(
         .await
         .ok_or(ServiceError::BadRequest("Channel not found".to_string()))?;
     let storage = manager.storage.lock().await;
-    println!("move_obj: {:?}", data); // DEBUG
     match storage.rename(&data.into_inner(), duration).await {
         Ok(obj) => Ok(web::Json(obj)),
         Err(e) => Err(e),

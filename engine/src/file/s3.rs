@@ -225,7 +225,6 @@ impl S3Storage {
         client: &aws_sdk_s3::Client,
         duration: web::Data<MediaMap>,
     ) -> Result<(), ServiceError> {
-        println!("source: {}", source_object); // DEBUG
         Self::s3_copy_object(source_object, destination_object, bucket, client).await?;
         Self::s3_delete_object(source_object, bucket, client).await?;
         duration.update_obj(source_object, destination_object)?;
