@@ -46,11 +46,11 @@ impl FolderSource {
                 Ok(paths) => {
                     for p in paths {
                         if storage.is_file(&p).await && include_file_extension(config, &p) {
-                            // let fetched_path = storage
-                            //     .fetch_file_path(&p.to_string_lossy())
-                            //     .await
-                            //     .unwrap_or(p.to_string_lossy().to_string());
-                            let mut media = Media::new(0, &p.to_string_lossy(), false).await;
+                            let fetched_path = storage
+                                .fetch_file_path(&p.to_string_lossy())
+                                .await
+                                .unwrap_or(p.to_string_lossy().to_string());
+                            let mut media = Media::new(0, &fetched_path, false).await;
                             media.key = p.to_string_lossy().to_string();
                             media_list.push(media);
                         }

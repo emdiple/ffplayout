@@ -1,5 +1,6 @@
 use std::io::Write;
 use std::{
+    collections::HashSet,
     io::{Error, ErrorKind},
     path::{Path, PathBuf},
     sync::{
@@ -18,7 +19,7 @@ use log::*;
 
 use rand::{distr::Alphanumeric, rngs::StdRng, seq::SliceRandom, Rng, SeedableRng};
 use regex::Regex;
-use tokio::sync::Mutex;
+use tokio::{sync::Mutex, task::JoinHandle};
 
 use crate::file::{media_map::SharedMediaMap, MoveObject, PathObject, Storage, VideoFile};
 use crate::player::utils::{include_file_extension, probe::MediaProbe, Media};
@@ -43,6 +44,7 @@ pub struct S3Storage {
     endpoint: String,
     bucket: String,
     client: Client,
+    pub watch_handler: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
 impl S3Storage {
@@ -73,6 +75,82 @@ impl S3Storage {
 
                 aws_sdk_s3::Client::from_conf(s3_config)
             },
+            watch_handler: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Watches an S3 bucket for changes and updates the `sources` list accordingly.
+    ///
+    /// # Arguments
+    /// - `config`: The playout configuration, including channel ID and file extension filters.
+    /// - `is_alive`: Atomic boolean to control the loop's lifetime.
+    /// - `sources`: Shared list of `Media` objects, protected by a mutex.
+    /// - `s3_client`: AWS S3 client for interacting with the bucket.
+    /// - `bucket_name`: Name of the S3 bucket to monitor.
+    pub async fn watch_s3(
+        &self,
+        config: PlayoutConfig,
+        is_alive: Arc<AtomicBool>,
+        sources: Arc<Mutex<Vec<Media>>>,
+    ) {
+        let id = config.general.channel_id;
+        let mut previous_keys = HashSet::new();
+        let bucket_name = &self.bucket.clone();
+        let s3_client = &self.client.clone();
+
+        info!(target: Target::file_mail(), channel = id;
+            "Monitoring S3 bucket: <b><magenta>{}</></b>",
+            bucket_name
+        );
+
+        while is_alive.load(Ordering::SeqCst) {
+            let resp = s3_client.list_objects_v2().bucket(bucket_name).send().await;
+
+            match resp {
+                Ok(output) => {
+                    let current_keys: HashSet<String> = output
+                        .contents
+                        .unwrap_or_default()
+                        .iter()
+                        .filter_map(|obj| obj.key.clone())
+                        .collect();
+
+                    // Detect added objects
+                    let added = current_keys.difference(&previous_keys);
+                    for key in added {
+                        if include_file_extension(&config, Path::new(key)) {
+                            let fetched_path =
+                                &self.fetch_file_path(key).await.unwrap_or(key.to_string());
+                            let media =
+                                Media::new(id.try_into().unwrap(), fetched_path, false).await;
+                            sources.lock().await.push(media);
+                            info!(target: Target::file_mail(), channel = id;
+                                "Added S3 object: <b><magenta>{}</></b>",
+                                &key
+                            );
+                        }
+                    }
+
+                    // Detect removed objects
+                    let removed = previous_keys.difference(&current_keys);
+                    for key in removed {
+                        sources.lock().await.retain(|x| x.source != *key);
+                        info!(target: Target::file_mail(), channel = id;
+                            "Removed S3 object: <b><magenta>{}</></b>",
+                            key
+                        );
+                    }
+
+                    previous_keys = current_keys;
+                }
+                Err(e) => {
+                    error!(target: Target::file_mail(), channel = id;
+                        "Error listing S3 objects: {:?}", e
+                    );
+                }
+            }
+
+            tokio::time::sleep(Duration::from_secs(3)).await;
         }
     }
 
@@ -597,69 +675,28 @@ impl Storage for S3Storage {
         }
         Ok(())
     }
+
     async fn watchman(
         &mut self,
         config: PlayoutConfig,
         is_alive: Arc<AtomicBool>,
         sources: Arc<Mutex<Vec<Media>>>,
     ) {
-        let bucket = &self.bucket.clone();
-        let client = &self.client.clone();
+        let s3_storage = self.clone();
+        let task = tokio::spawn(async move {
+            s3_storage.watch_s3(config, is_alive, sources).await;
+        });
 
-        let path = self.root.to_string_lossy().clone();
-        let id = config.general.channel_id;
-
-        let mut list_resp = client
-            .list_objects_v2()
-            .bucket(bucket)
-            .prefix(path)
-            // .max_keys(S3_MAX_KEYS)
-            .into_paginator()
-            .send();
-
-        while is_alive.load(Ordering::SeqCst) {
-            while let Some(result) = list_resp.next().await {
-                match result {
-                    Ok(object) => {
-                        let sources = Arc::clone(&sources);
-                        let config = config.clone();
-                        let self_clone = self.clone();
-
-                        tokio::spawn(async move {
-                            let mut media_list = sources.lock().await;
-                            if let Some(contents) = object.contents {
-                                for object in contents {
-                                    if let Some(key) = object.key {
-                                        if include_file_extension(&config, Path::new(&key)) {
-                                            let index = media_list.len();
-                                            let presigned_url = self_clone
-                                                .s3_get_object(
-                                                    &key,
-                                                    S3_DEFAULT_PRESIGNEDURL_EXP as u64,
-                                                )
-                                                .await
-                                                .unwrap();
-                                            let mut media =
-                                                Media::new(index, &presigned_url, false).await;
-                                            media.key = key.clone();
-                                            media_list.push(media);
-                                            info!(target: Target::file_mail(), channel = id; "Create new file: <b><magenta>{}</></b>", key);
-                                        }
-                                    }
-                                }
-                            }
-                        });
-                    }
-                    Err(err) => {
-                        eprintln!("{err:?}");
-                    }
-                }
-            }
-            tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-        }
+        *self.watch_handler.lock().await = Some(task);
     }
 
-    async fn stop_watch(&mut self) {}
+    async fn stop_watch(&mut self) {
+        let mut watch_handler = self.watch_handler.lock().await;
+
+        if let Some(handler) = watch_handler.as_mut() {
+            handler.abort();
+        }
+    }
 
     async fn open_media(
         &self,
