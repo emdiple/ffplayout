@@ -53,12 +53,22 @@ impl MediaMap {
         let mut media_duration = self.video_duration_data.lock().await;
         let mut queue = self.queue.lock().await;
 
+        // Remove old key and get its value, if it exists
         if let Some(value) = media_duration.remove(old_key) {
-            self.add_obj(new_key.to_string(), value).await?;
-        };
-
-        if let Some(index) = queue.iter().position(|x| x == old_key) {
-            queue[index] = new_key.to_string();
+            // Replace old key in queue if present, or add new key
+            match queue.iter().position(|x| x == old_key) {
+                Some(index) => queue[index] = new_key.to_string(),
+                None => {
+                    if queue.len() >= self.limit {
+                        if let Some(oldest_key) = queue.pop_front() {
+                            media_duration.remove(&oldest_key);
+                        }
+                    }
+                    queue.push_back(new_key.to_string());
+                }
+            }
+            // Insert new key-value pair
+            media_duration.insert(new_key.to_string(), value);
         }
 
         Ok(())
