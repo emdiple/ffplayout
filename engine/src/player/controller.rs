@@ -390,7 +390,7 @@ async fn run_channel(manager: ChannelManager) -> Result<(), ServiceError> {
             .storage
             .lock()
             .await
-            .fill_filler_list(&config, Some(filler_list))
+            .fill_filler_list(&config, Some(filler_list.clone()))
             .await;
     }
 

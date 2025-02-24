@@ -41,7 +41,10 @@ use crate::{
         handles,
         models::{Channel, Role, TextPreset, User, UserMeta},
     },
-    file::{media_map::SharedMediaMap, norm_abs_path, MoveObject, PathObject},
+    file::{
+        norm_abs_path, utils::media_map::SharedMediaMap, utils::ABS_PATH_INDICATOR, MoveObject,
+        PathObject,
+    },
     player::{
         controller::ChannelController,
         utils::{
@@ -740,8 +743,14 @@ async fn update_playout_config(
     let config_id = manager.config.lock().await.general.id;
 
     let (_, _, logo) = norm_abs_path(storage, &data.processing.logo)?;
-    let (_, _, filler) = norm_abs_path(storage, &data.storage.filler)?;
     let (_, _, font) = norm_abs_path(storage, &data.text.font)?;
+
+    let filler = if data.storage.filler.starts_with(ABS_PATH_INDICATOR) {
+        String::from(&data.storage.filler)
+    } else {
+        let (_, _, filler) = norm_abs_path(storage, &data.storage.filler)?;
+        filler
+    };
 
     data.processing.logo = logo;
     data.storage.filler = filler;
@@ -1169,7 +1178,6 @@ pub async fn save_playlist(
     let mut data = data.into_inner();
     for media in &mut data.program {
         let cloned_media_source = media.source.clone();
-        // media.key = cloned_media_source.clone();
         media.source = storage.sanitized_file_path(&cloned_media_source);
     }
 
@@ -1508,6 +1516,7 @@ async fn get_file(
     // let storage = config.channel.storage.clone();
     let storage = manager.storage.lock().await;
     let file_path = req.match_info().query("filename");
+
     let opened_file = storage.open_media(&req, file_path).await?;
 
     Ok(opened_file)

@@ -162,7 +162,6 @@ pub async fn validate_playlist(
     mut config: PlayoutConfig,
     current_list: Arc<Mutex<Vec<Media>>>,
     mut playlist: JsonPlaylist,
-    // storage: StorageBackend,
     is_alive: Arc<AtomicBool>,
 ) {
     let id = config.general.channel_id;
@@ -187,6 +186,7 @@ pub async fn validate_playlist(
         }
 
         let pos = index + 1;
+
         if !is_remote(&item.source) {
             if item.audio.is_empty() {
                 if let Err(e) = item.add_probe(false).await {

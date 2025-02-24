@@ -51,7 +51,14 @@ impl FolderSource {
                                 .await
                                 .unwrap_or(p.to_string_lossy().to_string());
                             let mut media = Media::new(0, &fetched_path, false).await;
-                            media.key = p.to_string_lossy().to_string();
+
+                            let key_path = if p.to_string_lossy().starts_with("/") {
+                                p.to_string_lossy().to_string()
+                            } else {
+                                format!("/{}", p.to_string_lossy())
+                            };
+                            media.key = storage.sanitized_file_path(&key_path);
+
                             media_list.push(media);
                         }
                     }

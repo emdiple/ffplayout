@@ -187,7 +187,7 @@ async fn write(manager: &ChannelManager, ff_log_format: &str) -> Result<(), Serv
         info!(target: Target::file_mail(), channel = id;
             "Play for <yellow>{}</>: <b><magenta>{}</></b>",
             sec_to_time(node.out - node.seek),
-            node.source
+            node.key
         );
 
         if config.task.enable {

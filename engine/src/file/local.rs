@@ -22,8 +22,8 @@ use rand::{distr::Alphanumeric, rngs::StdRng, seq::SliceRandom, Rng, SeedableRng
 use tokio::{fs, io::AsyncWriteExt, sync::Mutex, task::JoinHandle};
 
 use crate::file::{
-    media_map::SharedMediaMap, norm_abs_path, watcher::watch, MoveObject, PathObject, Storage,
-    VideoFile,
+    utils::media_map::SharedMediaMap, norm_abs_path, utils::watcher::watch, MoveObject, PathObject,
+    Storage, VideoFile,
 };
 use crate::player::utils::{file_extension, include_file_extension, probe::MediaProbe, Media};
 use crate::utils::{config::PlayoutConfig, errors::ServiceError, logging::Target};

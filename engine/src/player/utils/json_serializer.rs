@@ -7,11 +7,14 @@ use log::*;
 use serde::{Deserialize, Serialize};
 use tokio::{fs::File, io::AsyncReadExt, sync::Mutex};
 
-use crate::player::utils::{
-    get_date, is_remote, json_validate::validate_playlist, modified_time, time_from_header, Media,
-    PlayoutConfig,
-};
 use crate::utils::{config::DUMMY_LEN, logging::Target};
+use crate::{
+    file::StorageBackend,
+    player::utils::{
+        get_date, is_remote, json_validate::validate_playlist, modified_time, time_from_header,
+        Media, PlayoutConfig,
+    },
+};
 
 /// This is our main playlist object, it holds all necessary information for the current day.
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -92,17 +95,17 @@ pub fn set_defaults(playlist: &mut JsonPlaylist) {
 /// Read json playlist file, fills JsonPlaylist struct and set some extra values,
 /// which we need to process.
 pub async fn read_json(
+    storage: &Arc<Mutex<StorageBackend>>,
     config: &mut PlayoutConfig,
     current_list: Arc<Mutex<Vec<Media>>>,
     path: Option<String>,
-    // storage: StorageBackend,
     is_alive: Arc<AtomicBool>,
     seek: bool,
     get_next: bool,
 ) -> JsonPlaylist {
+    let storage = storage.lock().await;
     let id = config.general.channel_id;
     let config_clone = config.clone();
-    // let storage_clone = storage.clone();
     let mut playlist_path = config.channel.playlists.clone();
     let start_sec = config.playlist.start_sec.unwrap();
     let date = get_date(seek, start_sec, get_next, &config.channel.timezone);
@@ -181,6 +184,15 @@ pub async fn read_json(
                 JsonPlaylist::new(date.clone(), start_sec)
             }
         };
+
+        // bind source to key
+        // and fetched_path to source
+        for m in &mut playlist.program {
+            let source_clone = m.source.clone();
+            m.key = m.source.clone();
+            let interpreted_source = storage.interpreted_file_path(&source_clone);
+            m.source = storage.fetch_file_path(&interpreted_source).await.unwrap();
+        } // to-do : should take care about it!
 
         // catch empty program list
         if playlist.program.is_empty() {

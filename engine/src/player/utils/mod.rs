@@ -162,7 +162,7 @@ pub async fn get_data_map(manager: &ChannelManager) -> Map<String, Value> {
         .await
         .clone()
         .unwrap_or_else(Media::default);
-    media.source = media.clone().key; // to-do : check it later!
+    media.source = media.key.clone(); // to-do : check it later!
 
     let channel = manager.channel.lock().await.clone();
     let config = manager.config.lock().await.processing.clone();

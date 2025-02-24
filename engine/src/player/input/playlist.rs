@@ -83,8 +83,10 @@ impl CurrentProgram {
             get_current = true;
         }
 
+        let storage = &self.manager.storage.clone();
         if get_current {
             self.json_playlist = read_json(
+                storage,
                 &mut self.config,
                 self.manager.current_list.clone(),
                 self.json_playlist.path.clone(),
@@ -177,7 +179,9 @@ impl CurrentProgram {
             trace!("get next day");
             next = true;
 
+            let storage = &self.manager.storage.clone();
             self.json_playlist = read_json(
+                storage,
                 &mut self.config,
                 self.manager.current_list.clone(),
                 None,
@@ -507,15 +511,6 @@ impl CurrentProgram {
 
     /// Generate the source CMD, or when clip not exist, get a dummy.
     pub async fn gen_source(&mut self, mut node: Media, last_index: usize) {
-        let storage = self.manager.storage.lock().await.clone();
-        let source_clone = node.source.clone();
-        node.key = node.source;
-        let interpreted_source_clone = storage.interpreted_file_path(&source_clone);
-        node.source = storage
-            .fetch_file_path(&interpreted_source_clone)
-            .await
-            .unwrap();
-
         let node_index = node.index.unwrap_or_default();
         let duration = node.out - node.seek;
 
@@ -589,6 +584,7 @@ impl CurrentProgram {
                 .await
                 && !fillers.is_empty()
             {
+
                 let mut index = self.manager.filler_index.fetch_add(1, Ordering::SeqCst);
 
                 if index > fillers.len() - 1 {
@@ -614,7 +610,7 @@ impl CurrentProgram {
                     filler_media.out = duration;
                 }
 
-                node.source = filler_media.source;
+                node.source = filler_media.source; // to-do : single filler file!
                 node.seek = 0.0;
                 node.out = filler_media.out;
                 node.duration = filler_media.duration;
@@ -695,7 +691,7 @@ impl CurrentProgram {
             );
         }
 
-        node.add_filter(&self.config, &self.manager.filter_chain.clone())
+        node.add_filter(&self.config, &self.manager.filter_chain.clone()) // to-do : for fillter announcement
             .await;
 
         trace!(

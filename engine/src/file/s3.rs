@@ -21,7 +21,7 @@ use rand::{distr::Alphanumeric, rngs::StdRng, seq::SliceRandom, Rng, SeedableRng
 use regex::Regex;
 use tokio::{sync::Mutex, task::JoinHandle};
 
-use crate::file::{media_map::SharedMediaMap, MoveObject, PathObject, Storage, VideoFile};
+use crate::file::{utils::media_map::SharedMediaMap, MoveObject, PathObject, Storage, VideoFile};
 use crate::player::utils::{include_file_extension, probe::MediaProbe, Media};
 use crate::utils::{config::PlayoutConfig, errors::ServiceError, logging::Target};
 
@@ -383,6 +383,8 @@ impl Storage for S3Storage {
         let path_prefix = &self.path_prefix_generator();
         format!("{}{}", path_prefix, staged_path) // baked_path
     }
+
+    ///Interpret json media' source address to engine readble version
     fn interpreted_file_path(&self, path: &str) -> String {
         let path_prefix = &self.path_prefix_generator();
         path.strip_prefix(path_prefix).unwrap_or(path).to_string()
@@ -811,6 +813,9 @@ impl Storage for S3Storage {
     }
 
     async fn is_dir<P: AsRef<Path>>(&self, input: P) -> bool {
+        if input.as_ref().to_string_lossy() == self.original_root.to_string_lossy() {
+            return true;
+        }
         (self.s3_is_prefix(&input.as_ref().to_string_lossy()).await).unwrap_or_default()
     }
 

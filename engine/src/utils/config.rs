@@ -14,12 +14,15 @@ use sqlx::{Pool, Sqlite};
 use tokio::{fs, io::AsyncReadExt};
 use ts_rs::TS;
 
-use crate::db::{handles, models};
 use crate::file::norm_abs_path;
 use crate::utils::{gen_tcp_socket, time_to_sec};
 use crate::vec_strings;
 use crate::AdvancedConfig;
 use crate::ARGS;
+use crate::{
+    db::{handles, models},
+    file::utils::ABS_PATH_INDICATOR,
+};
 
 use super::errors::ServiceError;
 
@@ -628,7 +631,26 @@ impl PlayoutConfig {
             fs::create_dir_all(&channel.logs).await?;
         }
 
-        let (filler_path, _, filler) = norm_abs_path(&channel.storage, &config.storage_filler)?;
+        // it define the filler path in case of using abs of relative path
+        let (filler, filler_path) = if config.storage_filler.starts_with(ABS_PATH_INDICATOR) {
+            let filler_sanitized_path = config
+                .storage_filler
+                .strip_prefix(ABS_PATH_INDICATOR)
+                .unwrap_or(&config.storage_filler);
+            let filler_sanitized_path: &str = if filler_sanitized_path.starts_with("/") {
+                filler_sanitized_path
+            } else {
+                &format!("/{}", filler_sanitized_path)
+            };
+            let abs_filler = &config.storage_filler;
+            (
+                String::from(abs_filler),
+                PathBuf::from(&filler_sanitized_path),
+            )
+        } else {
+            let (filler_path, _, filler) = norm_abs_path(&channel.storage, &config.storage_filler)?;
+            (filler, filler_path)
+        };
 
         storage.filler = filler;
         storage.filler_path = filler_path;

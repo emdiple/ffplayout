@@ -19,7 +19,7 @@ use tokio::{fs::File, io::AsyncReadExt, sync::Mutex};
 use ffplayout::{
     api::routes::*,
     db::{db_drop, db_pool, handles, init_globales},
-    file::media_map::MediaMap,
+    file::utils::media_map::MediaMap,
     player::{
         controller::{ChannelController, ChannelManager},
         utils::{get_date, is_remote, json_validate::validate_playlist, JsonPlaylist},

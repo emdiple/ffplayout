@@ -8,15 +8,16 @@ use actix_web::{web, HttpRequest, HttpResponse};
 use relative_path::RelativePath;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
+use utils::ABS_PATH_INDICATOR;
 
 mod local;
-pub mod media_map;
 mod s3;
-mod watcher;
+pub mod utils;
 
-use crate::file::media_map::SharedMediaMap;
+use crate::file::{utils::filler, utils::media_map::SharedMediaMap};
 use crate::player::utils::Media;
 use crate::utils::{config::PlayoutConfig, errors::ServiceError};
+
 use s3::S3_INDICATOR;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -178,9 +179,14 @@ impl StorageBackend {
         config: &PlayoutConfig,
         fillers: Option<Arc<Mutex<Vec<Media>>>>,
     ) -> Vec<Media> {
-        match self {
-            StorageBackend::Local(storage) => storage.fill_filler_list(config, fillers).await,
-            StorageBackend::S3(storage) => storage.fill_filler_list(config, fillers).await,
+        let filler_path = &config.storage.filler;
+        if filler_path.starts_with(ABS_PATH_INDICATOR) {
+            filler::generic_fill_filler_list(config, fillers).await
+        } else {
+            match self {
+                StorageBackend::Local(storage) => storage.fill_filler_list(config, fillers).await,
+                StorageBackend::S3(storage) => storage.fill_filler_list(config, fillers).await,
+            }
         }
     }
 
