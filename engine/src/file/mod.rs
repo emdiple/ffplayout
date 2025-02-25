@@ -181,7 +181,7 @@ impl StorageBackend {
     ) -> Vec<Media> {
         let filler_path = &config.storage.filler;
         if filler_path.starts_with(ABS_PATH_INDICATOR) {
-            filler::generic_fill_filler_list(config, fillers).await
+            filler::absolute_fill_filler_list(config, fillers).await
         } else {
             match self {
                 StorageBackend::Local(storage) => storage.fill_filler_list(config, fillers).await,

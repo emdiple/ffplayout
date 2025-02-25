@@ -14,7 +14,7 @@ use crate::utils::{config::PlayoutConfig, logging::Target};
 
 use super::ABS_PATH_INDICATOR;
 
-pub async fn generic_fill_filler_list(
+pub async fn absolute_fill_filler_list(
     config: &PlayoutConfig,
     fillers: Option<Arc<Mutex<Vec<Media>>>>,
 ) -> Vec<Media> {
