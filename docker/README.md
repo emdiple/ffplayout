@@ -175,3 +175,12 @@ spec:
   tls:
     certResolver: yourCert
 ```
+
+# Custom Dockerfile
+
+Create docker image 4 sabaIdea use
+`docker build -t nvidia-ubuntu-ffplayout:s0.24.0 -f docker-custom/nvidia-ubuntu-fromSource.Dockerfile .`
+
+`docker run --rm -it --name ffplayout -p 8787:8787 nvidia-ubuntu-ffplayout:s0.24.0`
+
+`docker run --rm -it --name ffplayout -p 8787:8787 -v /home/mysamimi/ffmedia/db:/db -v /home/mysamimi/ffmedia/media:/tv-media -v /home/mysamimi/ffmedia/playlists:/playlists -v /home/mysamimi/ffmedia/log:/logging -v /home/mysamimi/ffmedia/public:/public nvidia-ubuntu-ffplayout:s0.24.0`
