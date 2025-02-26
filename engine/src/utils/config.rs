@@ -14,7 +14,7 @@ use sqlx::{Pool, Sqlite};
 use tokio::{fs, io::AsyncReadExt};
 use ts_rs::TS;
 
-use crate::file::norm_abs_path;
+use crate::file::{clean_raw_abs_path, norm_abs_path};
 use crate::utils::{gen_tcp_socket, time_to_sec};
 use crate::vec_strings;
 use crate::AdvancedConfig;
@@ -632,25 +632,28 @@ impl PlayoutConfig {
         }
 
         // it define the filler path in case of using abs of relative path
-        let (filler, filler_path) = if config.storage_filler.starts_with(ABS_PATH_INDICATOR) {
-            let filler_sanitized_path = config
-                .storage_filler
-                .strip_prefix(ABS_PATH_INDICATOR)
-                .unwrap_or(&config.storage_filler);
-            let filler_sanitized_path: &str = if filler_sanitized_path.starts_with("/") {
-                filler_sanitized_path
-            } else {
-                &format!("/{}", filler_sanitized_path)
-            };
-            let abs_filler = &config.storage_filler;
-            (
-                String::from(abs_filler),
-                PathBuf::from(&filler_sanitized_path),
-            )
-        } else {
-            let (filler_path, _, filler) = norm_abs_path(&channel.storage, &config.storage_filler)?;
-            (filler, filler_path)
-        };
+        // let (filler, filler_path) = if config.storage_filler.starts_with(ABS_PATH_INDICATOR) {
+        //     let filler_sanitized_path = config
+        //         .storage_filler
+        //         .strip_prefix(ABS_PATH_INDICATOR)
+        //         .unwrap_or(&config.storage_filler);
+        //     let filler_sanitized_path: &str = if filler_sanitized_path.starts_with("/") {
+        //         filler_sanitized_path
+        //     } else {
+        //         &format!("/{}", filler_sanitized_path)
+        //     };
+        //     let abs_filler = &config.storage_filler;
+        //     (
+        //         String::from(abs_filler),
+        //         PathBuf::from(&filler_sanitized_path),
+        //     )
+        // } else {
+        //     let (filler_path, _, filler) = norm_abs_path(&channel.storage, &config.storage_filler)?;
+        //     (filler, filler_path)
+        // };
+
+        let (filler, filler_path) =
+            clean_raw_abs_path(&channel.storage, &config.storage_filler, ABS_PATH_INDICATOR)?;
 
         storage.filler = filler;
         storage.filler_path = filler_path;
@@ -663,7 +666,8 @@ impl PlayoutConfig {
             playlist.length_sec = Some(86400.0);
         }
 
-        let (logo_path, _, logo) = norm_abs_path(&channel.storage, &processing.logo)?;
+        let (logo, logo_path) =
+            clean_raw_abs_path(&channel.storage, &processing.logo, ABS_PATH_INDICATOR)?;
 
         if processing.add_logo && !logo_path.is_file() {
             processing.add_logo = false;
@@ -820,7 +824,8 @@ impl PlayoutConfig {
             text.node_pos = None;
         }
 
-        let (font_path, _, font) = norm_abs_path(&channel.storage, &text.font)?;
+        let (font, font_path) =
+            clean_raw_abs_path(&channel.storage, &text.font, ABS_PATH_INDICATOR)?;
         text.font = font;
         text.font_path = font_path.to_string_lossy().to_string();
 

@@ -341,3 +341,35 @@ pub fn norm_abs_path(
 
     Ok((path.clone(), path_suffix, source_relative))
 }
+
+pub fn resolve_path(
+    storage: &Path,
+    path: &str,
+    abs_indicator: &str,
+) -> Result<String, ServiceError> {
+    if path.starts_with(abs_indicator) {
+        Ok(path.to_string())
+    } else {
+        let (_, _, resolved) = norm_abs_path(storage, path)?;
+        Ok(resolved)
+    }
+}
+
+pub fn clean_raw_abs_path(
+    channel_storage: &Path,
+    abs_path: &str,
+    abs_indicator: &str,
+) -> Result<(String, PathBuf), ServiceError> {
+    if abs_path.starts_with(abs_indicator) {
+        let sanitized = abs_path.strip_prefix(abs_indicator).unwrap_or(abs_path);
+        let sanitized_path = if sanitized.starts_with("/") {
+            sanitized.to_string()
+        } else {
+            format!("/{}", sanitized)
+        };
+        Ok((abs_path.to_string(), PathBuf::from(sanitized_path)))
+    } else {
+        let (filler_path, _, filler) = norm_abs_path(channel_storage, abs_path)?;
+        Ok((filler, filler_path))
+    }
+}

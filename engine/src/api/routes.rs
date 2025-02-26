@@ -42,8 +42,9 @@ use crate::{
         models::{Channel, Role, TextPreset, User, UserMeta},
     },
     file::{
-        norm_abs_path, utils::media_map::SharedMediaMap, utils::ABS_PATH_INDICATOR, MoveObject,
-        PathObject,
+        norm_abs_path, resolve_path,
+        utils::{media_map::SharedMediaMap, ABS_PATH_INDICATOR},
+        MoveObject, PathObject,
     },
     player::{
         controller::ChannelController,
@@ -742,15 +743,10 @@ async fn update_playout_config(
     let storage = Path::new(&p);
     let config_id = manager.config.lock().await.general.id;
 
-    let (_, _, logo) = norm_abs_path(storage, &data.processing.logo)?;
-    let (_, _, font) = norm_abs_path(storage, &data.text.font)?;
-
-    let filler = if data.storage.filler.starts_with(ABS_PATH_INDICATOR) {
-        String::from(&data.storage.filler)
-    } else {
-        let (_, _, filler) = norm_abs_path(storage, &data.storage.filler)?;
-        filler
-    };
+    // check if received data are in abs or relative path
+    let logo = resolve_path(storage, &data.processing.logo, ABS_PATH_INDICATOR)?;
+    let font = resolve_path(storage, &data.text.font, ABS_PATH_INDICATOR)?;
+    let filler = resolve_path(storage, &data.storage.filler, ABS_PATH_INDICATOR)?;
 
     data.processing.logo = logo;
     data.storage.filler = filler;
