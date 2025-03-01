@@ -1,7 +1,4 @@
-use std::{
-    path::{Path, PathBuf},
-    sync::{atomic::AtomicBool, Arc},
-};
+use std::path::{Path, PathBuf};
 
 use actix_multipart::Multipart;
 use actix_web::{web, HttpRequest, HttpResponse};
