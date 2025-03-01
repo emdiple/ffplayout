@@ -28,7 +28,7 @@ use crate::{
     utils::logging::Target,
 };
 use crate::{
-    file::{init_storage, local::LocalStorage},
+    file::{init_storage, select_storage_type, StorageBackend},
     player::{output::player, utils::Media},
 };
 
@@ -76,11 +76,12 @@ pub struct ChannelManager {
     pub filler_list: Arc<Mutex<Vec<Media>>>,
     pub current_index: Arc<AtomicUsize>,
     pub filler_index: Arc<AtomicUsize>,
-    pub storage: Arc<Mutex<LocalStorage>>,
+    pub storage: Arc<Mutex<StorageBackend>>,
 }
 
 impl ChannelManager {
     pub async fn new(db_pool: Pool<Sqlite>, channel: Channel, config: PlayoutConfig) -> Self {
+        let s_type = select_storage_type(&config.channel.storage);
         let channel_extensions = channel.extra_extensions.clone();
         let mut extensions = config.storage.extensions.clone();
         let mut extra_extensions = channel_extensions
@@ -91,7 +92,7 @@ impl ChannelManager {
         extensions.append(&mut extra_extensions);
 
         let storage = Arc::new(Mutex::new(
-            init_storage(config.channel.storage.clone(), extensions).await,
+            init_storage(s_type, config.channel.storage.clone(), extensions).await,
         ));
 
         let storage_ins = storage.lock().await.clone();

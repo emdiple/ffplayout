@@ -22,7 +22,7 @@ use rand::{distr::Alphanumeric, rngs::StdRng, seq::SliceRandom, Rng, SeedableRng
 use tokio::{fs, io::AsyncWriteExt, sync::Mutex, task::JoinHandle};
 
 use crate::file::{
-    utils::media_map::SharedMediaMap, norm_abs_path, utils::watcher::watch, MoveObject, PathObject,
+    norm_abs_path, utils::media_map::SharedMediaMap, utils::watcher::watch, MoveObject, PathObject,
     Storage, VideoFile,
 };
 use crate::player::utils::{file_extension, include_file_extension, probe::MediaProbe, Media};
@@ -203,7 +203,7 @@ impl Storage for LocalStorage {
         Ok(obj)
     }
 
-    pub async fn mkdir(&self, path_obj: &PathObject) -> Result<(), ServiceError> {
+    async fn mkdir(&self, path_obj: &PathObject) -> Result<(), ServiceError> {
         let (path, _, _) = norm_abs_path(&self.root, &path_obj.source)?;
 
         if let Err(e) = fs::create_dir_all(&path).await {
@@ -312,7 +312,7 @@ impl Storage for LocalStorage {
         Err(ServiceError::InternalServerError)
     }
 
-    pub async fn upload(
+    async fn upload(
         &self,
         mut data: Multipart,
         path: &Path,
@@ -370,7 +370,7 @@ impl Storage for LocalStorage {
         Ok(())
     }
 
-    pub async fn watchman(
+    async fn watchman(
         &mut self,
         config: PlayoutConfig,
         is_alive: Arc<AtomicBool>,
@@ -381,7 +381,7 @@ impl Storage for LocalStorage {
         }))));
     }
 
-    pub async fn stop_watch(&mut self) {
+    async fn stop_watch(&mut self) {
         let mut watch_handler = self.watch_handler.lock().await;
 
         if let Some(handler) = watch_handler.as_mut() {
@@ -405,7 +405,7 @@ impl Storage for LocalStorage {
             .into_response(_req))
     }
 
-    pub async fn fill_filler_list(
+    async fn fill_filler_list(
         &mut self,
         config: &PlayoutConfig,
         fillers: Option<Arc<Mutex<Vec<Media>>>>,
@@ -469,7 +469,7 @@ impl Storage for LocalStorage {
         filler_list
     }
 
-    pub async fn copy_assets(&self) -> Result<(), std::io::Error> {
+    async fn copy_assets(&self) -> Result<(), std::io::Error> {
         if self.root.is_dir() {
             let target = self.root.join("00-assets");
             let mut dummy_source = Path::new("/usr/share/ffplayout/dummy.vtt");
