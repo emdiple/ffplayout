@@ -1892,7 +1892,11 @@ dependencies = [
 
 [[package]]
 name = "ffplayout"
+<<<<<<< HEAD
 version = "0.25.0-alpha6"
+=======
+version = "0.24.4"
+>>>>>>> upstream/v0.24.x
 dependencies = [
  "actix-files",
  "actix-multipart",
@@ -4742,7 +4746,11 @@ dependencies = [
 
 [[package]]
 name = "tests"
+<<<<<<< HEAD
 version = "0.25.0-alpha6"
+=======
+version = "0.24.4"
+>>>>>>> upstream/v0.24.x
 dependencies = [
  "actix-test",
  "actix-web",
